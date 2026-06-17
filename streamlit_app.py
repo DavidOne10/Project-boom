@@ -49,7 +49,9 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         dati['MACD_Signal'] = dati['MACD'].ewm(span=9, adjust=False).mean()
         dati['MACD_Hist'] = dati['MACD'] - dati['MACD_Signal']
 
-        dati_ia = dati.dropna()
+        # Pulizia totale anti-crash
+        dati = dati.replace([np.inf, -np.inf], np.nan)
+        dati_ia = dati.dropna().copy()
 
         # 3. ADDESTRAMENTO MODELLO RAPIDO
         variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
@@ -118,3 +120,4 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         st.info(f"🟩 **PREZZO DI INGRESSO (TRIGGER):** {ingresso_vst:.2f} USD")
         st.error(f"🛑 **LIVELLO STOP LOSS (USCITA):** {stop_loss_vst:.2f} USD (Protetto Anti-Hunt)")
         st.success(f"💰 **LIVELLO TAKE PROFIT (TARGET):** {take_profit_vst:.2f} USD")
+
