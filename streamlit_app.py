@@ -1,4 +1,4 @@
-import streamlit as st
+      import streamlit as st
 import yfinance as yf
 import numpy as np
 import pandas as pd
@@ -138,21 +138,18 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
 
         # --- INTERFACCIA DI OUTPUT AGGIORNATA ---
         st.success("✅ Livelli ottimizzati con feed dati real-time!")
-        
-        # Inserimento Prezzo al momento del rilievo e direzione
         st.markdown(f"### 🧠 Direzione: **{'LONG (Acquisto)' if direzione_predetta == 1 else 'SHORT (Vendita)'}**")
         
         col_rilievo1, col_rilievo2 = st.columns(2)
         col_rilievo1.metric(label="🔍 Prezzo Attuale Rilevato", value=f"{prezzo_attuale:.2f} USD")
         col_rilievo2.metric(label="🎯 Affidabilità Segnale IA", value=f"{qualita_segnale:.2f}%")
         
-        # Sincronizzazione fuso orario italiano (UTC+2 in estate)
-ora_utc = datetime.utcnow()
-ora_italiana_ora = (ora_utc.hour + 2) % 24
-ora_italiana_stringa = f"{ora_italiana_ora:02d}:{ora_utc.minute:02d}:{ora_utc.second:02d}"
-
-st.caption(f"Prezzo di riferimento catturato esattamente alle ore italiane: {ora_italiana_stringa}")
-
+        # Blocco Orario Italiano perfettamente allineato e indentato
+        ora_utc = datetime.utcnow()
+        ora_italiana_ora = (ora_utc.hour + 2) % 24
+        ora_italiana_stringa = f"{ora_italiana_ora:02d}:{ora_utc.minute:02d}:{ora_utc.second:02d}"
+        
+        st.caption(f"Prezzo di riferimento catturato esattamente alle ore italiane: {ora_italiana_stringa}")
         st.markdown("---")
         
         col1, col2 = st.columns(2)
@@ -252,3 +249,4 @@ if not df_diario.empty:
         st.rerun()
 else:
     st.info("L'agenda è vuota. Registra il tuo primo trade usando il modulo sopra!")
+  
