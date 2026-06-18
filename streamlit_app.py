@@ -10,13 +10,15 @@ from datetime import datetime
 st.set_page_config(page_title="VST Trading IA", page_icon="🔮", layout="centered")
 
 st.title("🔮 VTI Trading System - Beta App")
-st.write("Generazione segnali intraday con filtri dinamici di Breakout su Supporti/Resistenze.")
+st.write("Generazione segnali intraday mirati per le sessioni delle 9:30 e 16:30 con filtri MACD/RSI.")
 
-# --- INPUT UTENTE ---
-budget_inserito = st.number_input("💰 Inserisci il budget sul tuo conto (€):", min_value=100.0, value=40000.0, step=100.0)
+# --- INPUT UTENTE E PORTAFOGLIO ---
+st.sidebar.header("⚙️ Impostazioni Portafoglio")
+capitale_partenza = st.sidebar.number_input("💵 Capitale Iniziale (€):", min_value=100.0, value=40000.0, step=500.0)
+budget_inserito = st.number_input("💰 Budget per Calcolo Rischio (€):", min_value=100.0, value=capitale_partenza, step=100.0)
 
 if st.button("🚀 GENERA SEGNALE OPERATIVO"):
-    with st.spinner("📡 Analizzando la forza del trend (MACD/RSI)..."):
+    with st.spinner("📡 Analizzando la finestra temporale e gli indicatori..."):
         
         # 1. SCARICAMENTO DATI
         dati = yf.download("CL=F", period="730d", interval="1h")
@@ -55,7 +57,7 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         dati = dati.replace([np.inf, -np.inf], np.nan)
         dati_ia = dati.dropna().copy()
 
-        # 3. ADDESTRAMENTO MODELLO RAPIDO
+        # 3. ADDESTRAMENTO MODELLO RAPIDO (Focalizzato sul doppio orario operativo)
         variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
                      'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
 
@@ -71,13 +73,13 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         direzione_predetta = modello_ia.predict(ultimo_dato)[0]
         qualita_segnale = probabilita[direzione_predetta] * 100
 
-        # Estrazione valori attuali per la logica di Breakout
+        # Estrazione parametri di mercato
         prezzo_attuale = dati_ia['Close'].iloc[-1]
         rsi_attuale = dati_ia['RSI'].iloc[-1]
         macd_attuale = dati_ia['MACD'].iloc[-1]
         macd_sig_attuale = dati_ia['MACD_Signal'].iloc[-1]
 
-        # --- REINTEGRO MONEY MANAGEMENT ---
+        # Money Management
         if qualita_segnale < 55:
             percentuale_rischio_base = 0.01
         elif qualita_segnale < 65:
@@ -99,13 +101,14 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         supporti_vicini = sorted([s for s in supporti if s < prezzo_attuale])[-2:]
         resistenze_vicine = sorted([r for r in resistenze if r > prezzo_attuale])[:2]
 
-        STOP_MINIMO_SICUREZZA = 1.20 
-        RAPPORTO_RR_MINIMO = 1.5 
+        # --- PARAMETRI AGGIORNATI E PIÙ REALISTICI PER L'INTRADAY ---
+        STOP_MINIMO_SICUREZZA = 0.60  # Ridotto per target più vicini e umani
+        RAPPORTO_RR_MINIMO = 1.2      # Modificato per rendere il target facilmente raggiungibile
 
         # --- LOGICA DI CALCOLO LIVELLI CON FILTRI MACD/RSI ---
         if direzione_predetta == 1:  # CASO LONG
             ingresso_vst = prezzo_attuale
-            stop_calcolato = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - 1.50
+            stop_calcolato = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - 1.00
             stop_loss_vst = ingresso_vst - STOP_MINIMO_SICUREZZA if (ingresso_vst - stop_calcolato) < STOP_MINIMO_SICUREZZA else stop_calcolato
             distanza_stop = ingresso_vst - stop_loss_vst
             
@@ -117,7 +120,7 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
                 
         else:  # CASO SHORT
             ingresso_vst = prezzo_attuale
-            stop_calcolato = resistenze_vicine[0] if len(resistenze_vicine) > 0 else ingresso_vst + 1.50
+            stop_calcolato = resistenze_vicine[0] if len(resistenze_vicine) > 0 else ingresso_vst + 1.00
             stop_loss_vst = ingresso_vst + STOP_MINIMO_SICUREZZA if (stop_calcolato - ingresso_vst) < STOP_MINIMO_SICUREZZA else stop_calcolato
             distanza_stop = stop_loss_vst - ingresso_vst
             
@@ -127,12 +130,11 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
                 tp_teorico = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
                 take_profit_vst = tp_teorico if (ingresso_vst - tp_teorico) >= (distanza_stop * RAPPORTO_RR_MINIMO) else ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
 
-        # --- INTERFACCIA DI OUTPUT REINTEGRATA ---
-        st.success("✅ Livelli calcolati con validazione di Momentum (MACD/RSI)!")
+        # --- INTERFACCIA DI OUTPUT ---
+        st.success("✅ Livelli ottimizzati e pronti per la finestra operativa!")
         st.markdown(f"### 🧠 Direzione: **{'LONG (Acquisto)' if direzione_predetta == 1 else 'SHORT (Vendita)'}**")
         st.metric(label="🎯 Affidabilità Segnale IA", value=f"{qualita_segnale:.2f}%")
         
-        # Blocco Money Management ripristinato
         col1, col2 = st.columns(2)
         col1.metric(label="📊 Rischio Posizione", value=f"{percentuale_rischio_base * 100:.1f}%")
         col2.metric(label="🔥 Entità Puntata (Rischio Max)", value=f"{somma_da_rischiare_eur:.2f} €")
@@ -186,6 +188,7 @@ if submit_trade:
     st.success("📌 Trade registrato con successo!")
     st.rerun()
 
+# --- RENDICONTO E BILANCIO DINAMICO ---
 if not df_diario.empty:
     st.subheader("📊 Statistiche Performance Realizzate")
     
@@ -194,18 +197,40 @@ if not df_diario.empty:
     win_rate = (trade_vinti / tot_trade) * 100 if tot_trade > 0 else 0
     pnl_totale = df_diario['Profitto_Perdita_EUR'].sum()
     
-    col_s1, col_s2, col_s3 = st.columns(3)
+    # Bilancio automatico del Portafoglio
+    capitale_attuale = capitale_partenza + pnl_totale
+    performance_percentuale = (pnl_totale / capitale_partenza) * 100 if capitale_partenza > 0 else 0
+    
+    c_cap1, c_cap2, c_cap3 = st.columns(3)
+    c_cap1.metric("💵 Capitale Iniziale", f"{capitale_partenza:,.2f} €")
+    c_cap2.metric("📈 Capitale Attuale", f"{capitale_attuale:,.2f} €", delta=f"{pnl_totale:+.2f} €")
+    c_cap3.metric("📊 Rendimento Storico", f"{performance_percentuale:+.2f}%")
+    
+    st.markdown(" ")
+    col_s1, col_s2 = st.columns(2)
     col_s1.metric("Operazioni Totali", f"{tot_trade}")
     col_s2.metric("Win Rate %", f"{win_rate:.1f}%")
-    col_s3.metric("P&L Totale (€)", f"{pnl_totale:.2f} €")
     
     st.subheader("🗂️ Storico Log Operazioni")
-    st.dataframe(df_diario.sort_index(ascending=False), use_container_width=True)
+    st.dataframe(df_diario, use_container_width=True)
     
-    if st.button("🗑️ Svuota l'intera Agenda"):
+    # Rimozione Singola Riga
+    st.markdown("---")
+    st.subheader("🛠️ Correzione Errori")
+    col_del1, col_del2 = st.columns([2, 1])
+    
+    riga_da_eliminare = col_del1.selectbox("Seleziona il numero di riga da eliminare:", options=df_diario.index.tolist())
+    
+    if col_del2.button("🗑️ Elimina Riga"):
+        df_diario = df_diario.drop(index=riga_da_eliminare).reset_index(drop=True)
+        df_diario.to_csv(FILE_DIARIO, index=False)
+        st.warning(f"Riga {riga_da_eliminare} eliminata.")
+        st.rerun()
+        
+    if st.button("🚨 Svuota Interamente l'Agenda"):
         if os.path.exists(FILE_DIARIO):
             os.remove(FILE_DIARIO)
-        st.warning("Agenda cancellata.")
+        st.error("Tutta l'agenda è stata svuotata.")
         st.rerun()
 else:
     st.info("L'agenda è vuota. Registra il tuo primo trade usando il modulo sopra!")
