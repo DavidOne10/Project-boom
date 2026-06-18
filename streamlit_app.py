@@ -14,7 +14,7 @@ st.write("Generazione segnali intraday mirati per le sessioni delle 9:30 e 16:30
 
 # --- INPUT UTENTE E PORTAFOGLIO ---
 st.sidebar.header("⚙️ Impostazioni Portafoglio")
-capitale_partenza = st.sidebar.number_input("💵 Capitale Iniziale (€):", min_value=100.0, value=40000.0, step=500.0)
+capitale_partenza = st.sidebar.number_input("💵 Capitale Iniziale (€):", min_value=100.0, value=1000.0, step=500.0)
 budget_inserito = st.number_input("💰 Budget per Calcolo Rischio (€):", min_value=100.0, value=capitale_partenza, step=100.0)
 
 if st.button("🚀 GENERA SEGNALE OPERATIVO"):
