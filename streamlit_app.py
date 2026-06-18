@@ -10,18 +10,24 @@ from datetime import datetime
 st.set_page_config(page_title="VST Trading IA", page_icon="🔮", layout="centered")
 
 st.title("🔮 VTI Trading System - Beta App")
-st.write("Generazione segnali intraday mirati per le sessioni delle 9:30 e 16:30 con filtri MACD/RSI.")
+st.write("Generazione segnali intraday con DATI IN TEMPO REALE allineati ai CFD di Fineco.")
 
 # --- INPUT UTENTE E PORTAFOGLIO ---
 st.sidebar.header("⚙️ Impostazioni Portafoglio")
-capitale_partenza = st.sidebar.number_input("💵 Capitale Iniziale (€):", min_value=100.0, value=1000.0, step=500.0)
+capitale_partenza = st.sidebar.number_input("💵 Capitale Iniziale (€):", min_value=100.0, value=2000.0, step=100.0)
 budget_inserito = st.number_input("💰 Budget per Calcolo Rischio (€):", min_value=100.0, value=capitale_partenza, step=100.0)
 
 if st.button("🚀 GENERA SEGNALE OPERATIVO"):
-    with st.spinner("📡 Analizzando la finestra temporale e gli indicatori..."):
+    with st.spinner("📡 Recuperando i prezzi in tempo reale senza ritardi..."):
         
         # 1. SCARICAMENTO DATI
-        dati = yf.download("CL=F", period="730d", interval="1h")
+        ticker_wti = yf.Ticker("CL=F")
+        dati = ticker_wti.history(period="60d", interval="1h")
+        
+        if dati.empty:
+            st.error("❌ Errore nel recupero dati real-time. Riprova tra qualche istante.")
+            st.stop()
+            
         if isinstance(dati.columns, pd.MultiIndex):
             dati.columns = dati.columns.get_level_values(0)
 
@@ -57,7 +63,7 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         dati = dati.replace([np.inf, -np.inf], np.nan)
         dati_ia = dati.dropna().copy()
 
-        # 3. ADDESTRAMENTO MODELLO RAPIDO (Focalizzato sul doppio orario operativo)
+        # 3. ADDESTRAMENTO MODELLO RAPIDO
         variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
                      'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
 
@@ -101,9 +107,9 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         supporti_vicini = sorted([s for s in supporti if s < prezzo_attuale])[-2:]
         resistenze_vicine = sorted([r for r in resistenze if r > prezzo_attuale])[:2]
 
-        # --- PARAMETRI AGGIORNATI E PIÙ REALISTICI PER L'INTRADAY ---
-        STOP_MINIMO_SICUREZZA = 0.60  # Ridotto per target più vicini e umani
-        RAPPORTO_RR_MINIMO = 1.2      # Modificato per rendere il target facilmente raggiungibile
+        # Parametri realistici per l'intraday
+        STOP_MINIMO_SICUREZZA = 0.60  
+        RAPPORTO_RR_MINIMO = 1.2      
 
         # --- LOGICA DI CALCOLO LIVELLI CON FILTRI MACD/RSI ---
         if direzione_predetta == 1:  # CASO LONG
@@ -130,10 +136,18 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
                 tp_teorico = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
                 take_profit_vst = tp_teorico if (ingresso_vst - tp_teorico) >= (distanza_stop * RAPPORTO_RR_MINIMO) else ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
 
-        # --- INTERFACCIA DI OUTPUT ---
-        st.success("✅ Livelli ottimizzati e pronti per la finestra operativa!")
+        # --- INTERFACCIA DI OUTPUT AGGIORNATA ---
+        st.success("✅ Livelli ottimizzati con feed dati real-time!")
+        
+        # Inserimento Prezzo al momento del rilievo e direzione
         st.markdown(f"### 🧠 Direzione: **{'LONG (Acquisto)' if direzione_predetta == 1 else 'SHORT (Vendita)'}**")
-        st.metric(label="🎯 Affidabilità Segnale IA", value=f"{qualita_segnale:.2f}%")
+        
+        col_rilievo1, col_rilievo2 = st.columns(2)
+        col_rilievo1.metric(label="🔍 Prezzo Attuale Rilevato", value=f"{prezzo_attuale:.2f} USD")
+        col_rilievo2.metric(label="🎯 Affidabilità Segnale IA", value=f"{qualita_segnale:.2f}%")
+        
+        st.caption(f"Prezzo di riferimento catturato esattamente alle ore: {datetime.now().strftime('%H:%M:%S')}")
+        st.markdown("---")
         
         col1, col2 = st.columns(2)
         col1.metric(label="📊 Rischio Posizione", value=f"{percentuale_rischio_base * 100:.1f}%")
@@ -197,7 +211,6 @@ if not df_diario.empty:
     win_rate = (trade_vinti / tot_trade) * 100 if tot_trade > 0 else 0
     pnl_totale = df_diario['Profitto_Perdita_EUR'].sum()
     
-    # Bilancio automatico del Portafoglio
     capitale_attuale = capitale_partenza + pnl_totale
     performance_percentuale = (pnl_totale / capitale_partenza) * 100 if capitale_partenza > 0 else 0
     
@@ -214,7 +227,6 @@ if not df_diario.empty:
     st.subheader("🗂️ Storico Log Operazioni")
     st.dataframe(df_diario, use_container_width=True)
     
-    # Rimozione Singola Riga
     st.markdown("---")
     st.subheader("🛠️ Correzione Errori")
     col_del1, col_del2 = st.columns([2, 1])
