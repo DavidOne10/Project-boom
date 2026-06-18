@@ -1,9 +1,10 @@
-
 import streamlit as st
 import yfinance as yf
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
+import os
+from datetime import datetime
 
 # Configurazione della pagina dell'applicazione
 st.set_page_config(page_title="VST Trading IA", page_icon="🔮", layout="centered")
@@ -71,7 +72,7 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         qualita_segnale = probabilita[direzione_predetta] * 100
 
         # Estrazione valori attuali per la logica di Breakout
-        prezzo_attuale = df_grafico = dati_ia['Close'].iloc[-1]
+        prezzo_attuale = dati_ia['Close'].iloc[-1]
         rsi_attuale = dati_ia['RSI'].iloc[-1]
         macd_attuale = dati_ia['MACD'].iloc[-1]
         macd_sig_attuale = dati_ia['MACD_Signal'].iloc[-1]
@@ -104,38 +105,26 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         # --- LOGICA DI CALCOLO LIVELLI CON FILTRI MACD/RSI ---
         if direzione_predetta == 1:  # CASO LONG
             ingresso_vst = prezzo_attuale
-            
-            # Calcolo Stop Loss protetto
             stop_calcolato = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - 1.50
             stop_loss_vst = ingresso_vst - STOP_MINIMO_SICUREZZA if (ingresso_vst - stop_calcolato) < STOP_MINIMO_SICUREZZA else stop_calcolato
             distanza_stop = ingresso_vst - stop_loss_vst
             
-            # VALUTAZIONE ROTTURA RESISTENZA (Filtro MACD e RSI)
-            # Se MACD incrociato al rialzo e RSI non è ancora in ipercomprato (>65) -> IPOTESI BREAKOUT
             if macd_attuale > macd_sig_attuale and rsi_attuale < 65:
-                # Forza un target ampio ignorando resistenze troppo vicine
                 take_profit_vst = ingresso_vst + (distanza_stop * RAPPORTO_RR_MINIMO)
             else:
                 tp_teorico = resistenze_vicine[0] if len(resistenze_vicine) > 0 else ingresso_vst + (distanza_stop * RAPPORTO_RR_MINIMO)
-                # Protezione finale R:R minimo
                 take_profit_vst = tp_teorico if (tp_teorico - ingresso_vst) >= (distanza_stop * RAPPORTO_RR_MINIMO) else ingresso_vst + (distanza_stop * RAPPORTO_RR_MINIMO)
                 
         else:  # CASO SHORT
             ingresso_vst = prezzo_attuale
-            
-            # Calcolo Stop Loss protetto
             stop_calcolato = resistenze_vicine[0] if len(resistenze_vicine) > 0 else ingresso_vst + 1.50
             stop_loss_vst = ingresso_vst + STOP_MINIMO_SICUREZZA if (stop_calcolato - ingresso_vst) < STOP_MINIMO_SICUREZZA else stop_calcolato
             distanza_stop = stop_loss_vst - ingresso_vst
             
-            # VALUTAZIONE ROTTURA SUPPORTO (Filtro MACD e RSI)
-            # Se MACD incrociato al ribasso e RSI ha spazio per scendere (>35) -> IPOTESI BREAKOUT
             if macd_attuale < macd_sig_attuale and rsi_attuale > 35:
-                # Forza un target ampio ignorando supporti troppo vicini
                 take_profit_vst = ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
             else:
                 tp_teorico = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
-                # Protezione finale R:R minimo
                 take_profit_vst = tp_teorico if (ingresso_vst - tp_teorico) >= (distanza_stop * RAPPORTO_RR_MINIMO) else ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
 
         # --- INTERFACCIA DI OUTPUT ---
@@ -148,3 +137,73 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         st.info(f"🟩 PREZZO DI INGRESSO (TRIGGER): {ingresso_vst:.2f} USD")
         st.error(f"🛑 LIVELLO STOP LOSS (Barriera Knockout vicina a): {stop_loss_vst:.2f} USD")
         st.success(f"💰 LIVELLO TAKE PROFIT: {take_profit_vst:.2f} USD")
+
+# --- SEZIONE AGENDA / DIARIO DI TRADING ---
+st.markdown("---")
+st.header("📅 Agenda e Diario di Trading Real-Time")
+st.write("Registra qui l'esito dei tuoi trade eseguiti su Fineco per tracciare le performance.")
+
+FILE_DIARIO = "diario_trading.csv"
+
+# Inizializzazione o caricamento del file CSV
+if os.path.exists(FILE_DIARIO):
+    try:
+        df_diario = pd.read_csv(FILE_DIARIO)
+    except:
+        df_diario = pd.DataFrame(columns=["Data", "Strumento", "Tipo", "Ingresso", "Esito", "Profitto_Perdita_EUR"])
+else:
+    df_diario = pd.DataFrame(columns=["Data", "Strumento", "Tipo", "Ingresso", "Esito", "Profitto_Perdita_EUR"])
+
+# Form di inserimento nuovo trade
+with st.form("nuovo_trade_form"):
+    st.subheader("📝 Registra Nuova Operazione Chiusa")
+    col_d1, col_d2, col_d3 = st.columns(3)
+    
+    data_trade = col_d1.date_input("Data Operazione", datetime.now())
+    tipo_trade = col_d2.selectbox("Tipo", ["LONG", "SHORT"])
+    ingresso_reale = col_d3.number_input("Prezzo Ingresso (USD)", min_value=0.0, value=74.0, step=0.01)
+    
+    col_d4, col_d5 = st.columns(2)
+    esito_trade = col_d4.selectbox("Esito", ["Take Profit (Gain)", "Stop Loss (Loss)", "Chiusura Manuale"])
+    pnl_valore = col_d5.number_input("Profitto / Perdita Reale (€)", value=0.0, step=10.0)
+    
+    submit_trade = st.form_submit_button("💾 Salva in Agenda")
+
+if submit_trade:
+    nuovo_rigo = pd.DataFrame([{
+        "Data": data_trade.strftime("%Y-%m-%d"),
+        "Strumento": "Petrolio (WTI)",
+        "Tipo": tipo_trade,
+        "Ingresso": ingresso_reale,
+        "Esito": esito_trade,
+        "Profitto_Perdita_EUR": pnl_valore
+    }])
+    df_diario = pd.concat([df_diario, nuorigo], ignore_index=True) if 'df_diario' in locals() and not df_diario.empty else nuovo_rigo
+    df_diario.to_csv(FILE_DIARIO, index=False)
+    st.success("📌 Trade registrato con successo!")
+    st.rerun()
+
+# Mostra statistiche e tabella se ci sono dati
+if not df_diario.empty:
+    st.subheader("📊 Statistiche Performance Realizzate")
+    
+    tot_trade = len(df_diario)
+    trade_vinti = len(df_diario[df_diario['Profitto_Perdita_EUR'] > 0])
+    win_rate = (trade_vinti / tot_trade) * 100 if tot_trade > 0 else 0
+    pnl_totale = df_diario['Profitto_Perdita_EUR'].sum()
+    
+    col_s1, col_s2, col_s3 = st.columns(3)
+    col_s1.metric("Operazioni Totali", f"{tot_trade}")
+    col_s2.metric("Win Rate %", f"{win_rate:.1f}%")
+    col_s3.metric("P&L Totale (€)", f"{pnl_totale:.2f} €")
+    
+    st.subheader("🗂️ Storico Log Operazioni")
+    st.dataframe(df_diario.sort_index(ascending=False), use_container_width=True)
+    
+    if st.button("🗑️ Svuota l'intera Agenda"):
+        if os.path.exists(FILE_DIARIO):
+            os.remove(FILE_DIARIO)
+        st.warning("Agenda cancellata.")
+        st.rerun()
+else:
+    st.info("L'agenda è vuota. Registra il tuo primo trade usando il modulo sopra!")
