@@ -77,7 +77,7 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         macd_attuale = dati_ia['MACD'].iloc[-1]
         macd_sig_attuale = dati_ia['MACD_Signal'].iloc[-1]
 
-        # Money Management 
+        # --- REINTEGRO MONEY MANAGEMENT ---
         if qualita_segnale < 55:
             percentuale_rischio_base = 0.01
         elif qualita_segnale < 65:
@@ -127,10 +127,15 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
                 tp_teorico = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
                 take_profit_vst = tp_teorico if (ingresso_vst - tp_teorico) >= (distanza_stop * RAPPORTO_RR_MINIMO) else ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
 
-        # --- INTERFACCIA DI OUTPUT ---
+        # --- INTERFACCIA DI OUTPUT REINTEGRATA ---
         st.success("✅ Livelli calcolati con validazione di Momentum (MACD/RSI)!")
         st.markdown(f"### 🧠 Direzione: **{'LONG (Acquisto)' if direzione_predetta == 1 else 'SHORT (Vendita)'}**")
         st.metric(label="🎯 Affidabilità Segnale IA", value=f"{qualita_segnale:.2f}%")
+        
+        # Blocco Money Management ripristinato
+        col1, col2 = st.columns(2)
+        col1.metric(label="📊 Rischio Posizione", value=f"{percentuale_rischio_base * 100:.1f}%")
+        col2.metric(label="🔥 Entità Puntata (Rischio Max)", value=f"{somma_da_rischiare_eur:.2f} €")
         
         st.markdown("---")
         st.markdown("### 🚨 LIVELLI DA USARE PER IL KNOCKOUT FINECO:")
@@ -145,7 +150,6 @@ st.write("Registra qui l'esito dei tuoi trade eseguiti su Fineco per tracciare l
 
 FILE_DIARIO = "diario_trading.csv"
 
-# Inizializzazione o caricamento del file CSV
 if os.path.exists(FILE_DIARIO):
     try:
         df_diario = pd.read_csv(FILE_DIARIO)
@@ -154,7 +158,6 @@ if os.path.exists(FILE_DIARIO):
 else:
     df_diario = pd.DataFrame(columns=["Data", "Strumento", "Tipo", "Ingresso", "Esito", "Profitto_Perdita_EUR"])
 
-# Form di inserimento nuovo trade
 with st.form("nuovo_trade_form"):
     st.subheader("📝 Registra Nuova Operazione Chiusa")
     col_d1, col_d2, col_d3 = st.columns(3)
@@ -178,12 +181,11 @@ if submit_trade:
         "Esito": esito_trade,
         "Profitto_Perdita_EUR": pnl_valore
     }])
-    df_diario = pd.concat([df_diario, nuorigo], ignore_index=True) if 'df_diario' in locals() and not df_diario.empty else nuovo_rigo
+    df_diario = pd.concat([df_diario, nuovo_rigo], ignore_index=True)
     df_diario.to_csv(FILE_DIARIO, index=False)
     st.success("📌 Trade registrato con successo!")
     st.rerun()
 
-# Mostra statistiche e tabella se ci sono dati
 if not df_diario.empty:
     st.subheader("📊 Statistiche Performance Realizzate")
     
