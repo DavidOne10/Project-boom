@@ -146,7 +146,13 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         col_rilievo1.metric(label="🔍 Prezzo Attuale Rilevato", value=f"{prezzo_attuale:.2f} USD")
         col_rilievo2.metric(label="🎯 Affidabilità Segnale IA", value=f"{qualita_segnale:.2f}%")
         
-        st.caption(f"Prezzo di riferimento catturato esattamente alle ore: {datetime.now().strftime('%H:%M:%S')}")
+        # Sincronizzazione fuso orario italiano (UTC+2 in estate)
+ora_utc = datetime.utcnow()
+ora_italiana_ora = (ora_utc.hour + 2) % 24
+ora_italiana_stringa = f"{ora_italiana_ora:02d}:{ora_utc.minute:02d}:{ora_utc.second:02d}"
+
+st.caption(f"Prezzo di riferimento catturato esattamente alle ore italiane: {ora_italiana_stringa}")
+
         st.markdown("---")
         
         col1, col2 = st.columns(2)
