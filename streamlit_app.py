@@ -1,3 +1,4 @@
+
 import streamlit as st
 import yfinance as yf
 import numpy as np
@@ -8,13 +9,13 @@ from sklearn.ensemble import RandomForestClassifier
 st.set_page_config(page_title="VST Trading IA", page_icon="🔮", layout="centered")
 
 st.title("🔮 VTI Trading System - Beta App")
-st.write("Generazione segnali intraday mirati per le sessioni delle 9:30 e 16:30.")
+st.write("Generazione segnali intraday con filtri dinamici di Breakout su Supporti/Resistenze.")
 
 # --- INPUT UTENTE ---
 budget_inserito = st.number_input("💰 Inserisci il budget sul tuo conto (€):", min_value=100.0, value=40000.0, step=100.0)
 
 if st.button("🚀 GENERA SEGNALE OPERATIVO"):
-    with st.spinner("📡 Interrogando Yahoo Finance e calcolando gli indicatori..."):
+    with st.spinner("📡 Analizzando la forza del trend (MACD/RSI)..."):
         
         # 1. SCARICAMENTO DATI
         dati = yf.download("CL=F", period="730d", interval="1h")
@@ -69,7 +70,13 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         direzione_predetta = modello_ia.predict(ultimo_dato)[0]
         qualita_segnale = probabilita[direzione_predetta] * 100
 
-        # Money Management
+        # Estrazione valori attuali per la logica di Breakout
+        prezzo_attuale = df_grafico = dati_ia['Close'].iloc[-1]
+        rsi_attuale = dati_ia['RSI'].iloc[-1]
+        macd_attuale = dati_ia['MACD'].iloc[-1]
+        macd_sig_attuale = dati_ia['MACD_Signal'].iloc[-1]
+
+        # Money Management 
         if qualita_segnale < 55:
             percentuale_rischio_base = 0.01
         elif qualita_segnale < 65:
@@ -77,9 +84,9 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         else:
             percentuale_rischio_base = 0.03
 
-        somma_da_rischiare = budget_inserito * percentuale_rischio_base
+        somma_da_rischiare_eur = budget_inserito * percentuale_rischio_base
 
-        # Supporti e Resistenze
+        # Geometria dei Supporti e Resistenze
         df_grafico = dati_ia.copy()
         finestra_nodi = 24
         df_grafico['Minimo_Locale'] = df_grafico['Close'].rolling(window=finestra_nodi, center=True).min()
@@ -88,36 +95,56 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         supporti = df_grafico[df_grafico['Close'] == df_grafico['Minimo_Locale']]['Close'].unique()
         resistenze = df_grafico[df_grafico['Close'] == df_grafico['Massimo_Locale']]['Close'].unique()
 
-        prezzo_attuale = df_grafico['Close'].iloc[-1]
         supporti_vicini = sorted([s for s in supporti if s < prezzo_attuale])[-2:]
         resistenze_vicine = sorted([r for r in resistenze if r > prezzo_attuale])[:2]
 
         STOP_MINIMO_SICUREZZA = 1.20 
+        RAPPORTO_RR_MINIMO = 1.5 
 
-        if direzione_predetta == 1:
+        # --- LOGICA DI CALCOLO LIVELLI CON FILTRI MACD/RSI ---
+        if direzione_predetta == 1:  # CASO LONG
             ingresso_vst = prezzo_attuale
+            
+            # Calcolo Stop Loss protetto
             stop_calcolato = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - 1.50
             stop_loss_vst = ingresso_vst - STOP_MINIMO_SICUREZZA if (ingresso_vst - stop_calcolato) < STOP_MINIMO_SICUREZZA else stop_calcolato
-            take_profit_vst = resistenze_vicine[0] if len(resistenze_vicine) > 0 else ingresso_vst + 2.00
-        else:
+            distanza_stop = ingresso_vst - stop_loss_vst
+            
+            # VALUTAZIONE ROTTURA RESISTENZA (Filtro MACD e RSI)
+            # Se MACD incrociato al rialzo e RSI non è ancora in ipercomprato (>65) -> IPOTESI BREAKOUT
+            if macd_attuale > macd_sig_attuale and rsi_attuale < 65:
+                # Forza un target ampio ignorando resistenze troppo vicine
+                take_profit_vst = ingresso_vst + (distanza_stop * RAPPORTO_RR_MINIMO)
+            else:
+                tp_teorico = resistenze_vicine[0] if len(resistenze_vicine) > 0 else ingresso_vst + (distanza_stop * RAPPORTO_RR_MINIMO)
+                # Protezione finale R:R minimo
+                take_profit_vst = tp_teorico if (tp_teorico - ingresso_vst) >= (distanza_stop * RAPPORTO_RR_MINIMO) else ingresso_vst + (distanza_stop * RAPPORTO_RR_MINIMO)
+                
+        else:  # CASO SHORT
             ingresso_vst = prezzo_attuale
+            
+            # Calcolo Stop Loss protetto
             stop_calcolato = resistenze_vicine[0] if len(resistenze_vicine) > 0 else ingresso_vst + 1.50
             stop_loss_vst = ingresso_vst + STOP_MINIMO_SICUREZZA if (stop_calcolato - ingresso_vst) < STOP_MINIMO_SICUREZZA else stop_calcolato
-            take_profit_vst = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - 2.00
+            distanza_stop = stop_loss_vst - ingresso_vst
+            
+            # VALUTAZIONE ROTTURA SUPPORTO (Filtro MACD e RSI)
+            # Se MACD incrociato al ribasso e RSI ha spazio per scendere (>35) -> IPOTESI BREAKOUT
+            if macd_attuale < macd_sig_attuale and rsi_attuale > 35:
+                # Forza un target ampio ignorando supporti troppo vicini
+                take_profit_vst = ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
+            else:
+                tp_teorico = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
+                # Protezione finale R:R minimo
+                take_profit_vst = tp_teorico if (ingresso_vst - tp_teorico) >= (distanza_stop * RAPPORTO_RR_MINIMO) else ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
 
-        # --- INTERFACCIA DI OUTPUT RECONDIZIONATA ---
-        st.success("✅ Segnale Calcolato!")
-        
+        # --- INTERFACCIA DI OUTPUT ---
+        st.success("✅ Livelli calcolati con validazione di Momentum (MACD/RSI)!")
         st.markdown(f"### 🧠 Direzione: **{'LONG (Acquisto)' if direzione_predetta == 1 else 'SHORT (Vendita)'}**")
         st.metric(label="🎯 Affidabilità Segnale IA", value=f"{qualita_segnale:.2f}%")
         
-        col1, col2 = st.columns(2)
-        col1.metric(label="📊 Rischio Posizione", value=f"{percentuale_rischio_base * 100:.1f}%")
-        col2.metric(label="🔥 Entità Puntata", value=f"{somma_da_rischiare:.2f} €")
-        
         st.markdown("---")
-        st.markdown("### 🛠️ LIVELLI DA INSERIRE SUL BROKER:")
-        st.info(f"🟩 **PREZZO DI INGRESSO (TRIGGER):** {ingresso_vst:.2f} USD")
-        st.error(f"🛑 **LIVELLO STOP LOSS (USCITA):** {stop_loss_vst:.2f} USD (Protetto Anti-Hunt)")
-        st.success(f"💰 **LIVELLO TAKE PROFIT (TARGET):** {take_profit_vst:.2f} USD")
-
+        st.markdown("### 🚨 LIVELLI DA USARE PER IL KNOCKOUT FINECO:")
+        st.info(f"🟩 PREZZO DI INGRESSO (TRIGGER): {ingresso_vst:.2f} USD")
+        st.error(f"🛑 LIVELLO STOP LOSS (Barriera Knockout vicina a): {stop_loss_vst:.2f} USD")
+        st.success(f"💰 LIVELLO TAKE PROFIT: {take_profit_vst:.2f} USD")
