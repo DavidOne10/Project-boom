@@ -17,15 +17,15 @@ st.sidebar.header("⚙️ Impostazioni Portafoglio")
 capitale_partenza = st.sidebar.number_input("💵 Capitale Iniziale (€):", min_value=100.0, value=2000.0, step=100.0)
 budget_inserito = st.number_input("💰 Budget per Calcolo Rischio (€):", min_value=100.0, value=capitale_partenza, step=100.0)
 
-if st.button("🚀 GENERA SEGNALE OPERATIVO"):
-    with st.spinner("📡 Recuperando i prezzi in tempo reale senza ritardi..."):
+if st.button("🚀 GENERA / AGGIORNA SEGNALE OPERATIVO"):
+    with st.spinner("📡 Recuperando le quotazioni istantanee e ricalcolando i livelli..."):
         
-        # 1. SCARICAMENTO DATI
+        # 1. SCARICAMENTO DATI STORICI PER IA
         ticker_wti = yf.Ticker("CL=F")
         dati = ticker_wti.history(period="60d", interval="1h")
         
         if dati.empty:
-            st.error("❌ Errore nel recupero dati real-time. Riprova tra qualche istante.")
+            st.error("❌ Errore nel recupero dati dal server. Riprova tra qualche istante.")
             st.stop()
             
         if isinstance(dati.columns, pd.MultiIndex):
@@ -73,14 +73,20 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         modello_ia = RandomForestClassifier(n_estimators=150, min_samples_leaf=5, random_state=42)
         modello_ia.fit(X_train, y_train)
 
-        # 4. PREDIZIONE ULTIMO DATO
+        # 4. PREDIZIONE
         ultimo_dato = dati_ia[variabili].iloc[-1:]
         probabilita = modello_ia.predict_proba(ultimo_dato)[0]
         direzione_predetta = modello_ia.predict(ultimo_dato)[0]
         qualita_segnale = probabilita[direzione_predetta] * 100
 
-        # Estrazione parametri di mercato
-        prezzo_attuale = dati_ia['Close'].iloc[-1]
+        # --- ESTRAZIONE PREZZO LIVE ULTRA-RAPIDO (TICKER LIVE) ---
+        try:
+            prezzo_attuale = ticker_wti.fast_info['lastPrice']
+            if prezzo_attuale is None or np.isnan(prezzo_attuale):
+                prezzo_attuale = dati_ia['Close'].iloc[-1]
+        except:
+            prezzo_attuale = dati_ia['Close'].iloc[-1]
+
         rsi_attuale = dati_ia['RSI'].iloc[-1]
         macd_attuale = dati_ia['MACD'].iloc[-1]
         macd_sig_attuale = dati_ia['MACD_Signal'].iloc[-1]
@@ -108,10 +114,10 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         resistenze_vicine = sorted([r for r in resistenze if r > prezzo_attuale])[:2]
 
         # REGOLE RIGIDE SULLA DISTANZA PER INTRADAY
-        STOP_MAX_TOLLERATO = 0.60  # Massimo rischio tollerato in punti/dollari
+        STOP_MAX_TOLLERATO = 0.60  
         RAPPORTO_RR = 1.2      
 
-        # --- LOGICA LIVELLI OTTIMIZZATA ANTI-DISTORSIONE CORRETTA ---
+        # --- LOGICA CALCOLO LIVELLI IN LIVE STREAMING ---
         ingresso_vst = prezzo_attuale
 
         if direzione_predetta == 1:  # CASO LONG
@@ -135,11 +141,11 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
             take_profit_vst = ingresso_vst - (distanza_stop * RAPPORTO_RR)
 
         # --- INTERFACCIA DI OUTPUT AGGIORNATA ---
-        st.success("✅ Livelli ottimizzati con feed dati real-time ed evaporazione anomalie!")
+        st.success("✅ Statistiche e livelli ricalcolati sul prezzo corrente!")
         st.markdown(f"### 🧠 Direzione: **{'LONG (Acquisto)' if direzione_predetta == 1 else 'SHORT (Vendita)'}**")
         
         col_rilievo1, col_rilievo2 = st.columns(2)
-        col_rilievo1.metric(label="🔍 Prezzo Attuale Rilevato", value=f"{prezzo_attuale:.2f} USD")
+        col_rilievo1.metric(label="🔍 Prezzo Spot Rilevato", value=f"{prezzo_attuale:.2f} USD")
         col_rilievo2.metric(label="🎯 Affidabilità Segnale IA", value=f"{qualita_segnale:.2f}%")
         
         # Blocco Orario Italiano
@@ -147,7 +153,7 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         ora_italiana_ora = (ora_utc.hour + 2) % 24
         ora_italiana_stringa = f"{ora_italiana_ora:02d}:{ora_utc.minute:02d}:{ora_utc.second:02d}"
         
-        st.caption(f"Prezzo di riferimento catturato esattamente alle ore italiane: {ora_italiana_stringa}")
+        st.caption(f"Ultimo ricalcolo effettuato alle ore italiane: {ora_italiana_stringa}")
         st.markdown("---")
         
         col1, col2 = st.columns(2)
@@ -155,10 +161,10 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         col2.metric(label="🔥 Entità Puntata (Rischio Max)", value=f"{somma_da_rischiare_eur:.2f} €")
         
         st.markdown("---")
-        st.markdown("### 🚨 LIVELLI DA USARE PER IL KNOCKOUT FINECO:")
-        st.info(f"🟩 PREZZO DI INGRESSO (TRIGGER): {ingresso_vst:.2f} USD")
-        st.error(f"🛑 LIVELLO STOP LOSS (Barriera Knockout vicina a): {stop_loss_vst:.2f} USD")
-        st.success(f"💰 LIVELLO TAKE PROFIT: {take_profit_vst:.2f} USD")
+        st.markdown("### 🚨 LIVELLI AGGIORNATI DA APPLICARE SU FINECO:")
+        st.info(f"🟩 PREZZO DI INGRESSO REALE: {ingresso_vst:.2f} USD")
+        st.error(f"🛑 LIVELLO STOP LOSS CALCOLATO: {stop_loss_vst:.2f} USD")
+        st.success(f"💰 LIVELLO TAKE PROFIT CALCOLATO: {take_profit_vst:.2f} USD")
 
 # --- SEZIONE AGENDA / DIARIO DI TRADING ---
 st.markdown("---")
