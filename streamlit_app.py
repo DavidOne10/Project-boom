@@ -107,37 +107,37 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         supporti_vicini = sorted([s for s in supporti if s < prezzo_attuale])[-2:]
         resistenze_vicine = sorted([r for r in resistenze if r > prezzo_attuale])[:2]
 
-        # Parametri realistici per l'intraday
-        STOP_MINIMO_SICUREZZA = 0.60  
-        RAPPORTO_RR_MINIMO = 1.2      
+        # REGOLE RIGIDE SULLA DISTANZA PER INTRADAY
+        STOP_MAX_TOLLERATO = 0.60  # Massimo rischio tollerato in punti/dollari
+        RAPPORTO_RR = 1.2      
 
-        # --- LOGICA DI CALCOLO LIVELLI CON FILTRI MACD/RSI ---
+        # --- LOGICA LIVELLI OTTIMIZZATA ANTI-DISTORSIONE CORRETTA ---
+        ingresso_vst = prezzo_attuale
+
         if direzione_predetta == 1:  # CASO LONG
-            ingresso_vst = prezzo_attuale
-            stop_calcolato = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - 1.00
-            stop_loss_vst = ingresso_vst - STOP_MINIMO_SICUREZZA if (ingresso_vst - stop_calcolato) < STOP_MINIMO_SICUREZZA else stop_calcolato
-            distanza_stop = ingresso_vst - stop_loss_vst
-            
-            if macd_attuale > macd_sig_attuale and rsi_attuale < 65:
-                take_profit_vst = ingresso_vst + (distanza_stop * RAPPORTO_RR_MINIMO)
+            stop_teorico = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - STOP_MAX_TOLLERATO
+            # Se lo stop grafico è troppo lontano, o non protettivo, lo forziamo a 0.60$
+            if (ingresso_vst - stop_teorico) > STOP_MAX_TOLLERATO or (ingresso_vst - stop_teorico) <= 0:
+                stop_loss_vst = ingresso_vst - STOP_MAX_TOLLERATO
             else:
-                tp_teorico = resistenze_vicine[0] if len(resistenze_vicine) > 0 else ingresso_vst + (distanza_stop * RAPPORTO_RR_MINIMO)
-                take_profit_vst = tp_teorico if (tp_teorico - ingresso_vst) >= (distanza_stop * RAPPORTO_RR_MINIMO) else ingresso_vst + (distanza_stop * RAPPORTO_RR_MINIMO)
+                stop_loss_vst = stop_teorico
+                
+            distanza_stop = ingresso_vst - stop_loss_vst
+            take_profit_vst = ingresso_vst + (distanza_stop * RAPPORTO_RR)
                 
         else:  # CASO SHORT
-            ingresso_vst = prezzo_attuale
-            stop_calcolato = resistenze_vicine[0] if len(resistenze_vicine) > 0 else ingresso_vst + 1.00
-            stop_loss_vst = ingresso_vst + STOP_MINIMO_SICUREZZA if (stop_calcolato - ingresso_vst) < STOP_MINIMO_SICUREZZA else stop_calcolato
-            distanza_stop = stop_loss_vst - ingresso_vst
-            
-            if macd_attuale < macd_sig_attuale and rsi_attuale > 35:
-                take_profit_vst = ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
+            stop_teorico = resistenze_vicine[0] if len(resistenze_vicine) > 0 else ingresso_vst + STOP_MAX_TOLLERATO
+            # Se lo stop grafico (es. 77.00) è troppo lontano, lo forziamo a 0.60$
+            if (stop_teorico - ingresso_vst) > STOP_MAX_TOLLERATO or (stop_teorico - ingresso_vst) <= 0:
+                stop_loss_vst = ingresso_vst + STOP_MAX_TOLLERATO
             else:
-                tp_teorico = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
-                take_profit_vst = tp_teorico if (ingresso_vst - tp_teorico) >= (distanza_stop * RAPPORTO_RR_MINIMO) else ingresso_vst - (distanza_stop * RAPPORTO_RR_MINIMO)
+                stop_loss_vst = stop_teorico
+                
+            distanza_stop = stop_loss_vst - ingresso_vst
+            take_profit_vst = ingresso_vst - (distanza_stop * RAPPORTO_RR)
 
         # --- INTERFACCIA DI OUTPUT AGGIORNATA ---
-        st.success("✅ Livelli ottimizzati con feed dati real-time!")
+        st.success("✅ Livelli ottimizzati con feed dati real-time ed evaporazione anomalie!")
         st.markdown(f"### 🧠 Direzione: **{'LONG (Acquisto)' if direzione_predetta == 1 else 'SHORT (Vendita)'}**")
         
         col_rilievo1, col_rilievo2 = st.columns(2)
@@ -249,4 +249,3 @@ if not df_diario.empty:
         st.rerun()
 else:
     st.info("L'agenda è vuota. Registra il tuo primo trade usando il modulo sopra!")
-  
