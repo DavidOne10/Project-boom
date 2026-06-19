@@ -116,7 +116,6 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
 
         if direzione_predetta == 1:  # CASO LONG
             stop_teorico = supporti_vicini[-1] if len(supporti_vicini) > 0 else ingresso_vst - STOP_MAX_TOLLERATO
-            # Se lo stop grafico è troppo lontano, o non protettivo, lo forziamo a 0.60$
             if (ingresso_vst - stop_teorico) > STOP_MAX_TOLLERATO or (ingresso_vst - stop_teorico) <= 0:
                 stop_loss_vst = ingresso_vst - STOP_MAX_TOLLERATO
             else:
@@ -127,7 +126,6 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
                 
         else:  # CASO SHORT
             stop_teorico = resistenze_vicine[0] if len(resistenze_vicine) > 0 else ingresso_vst + STOP_MAX_TOLLERATO
-            # Se lo stop grafico (es. 77.00) è troppo lontano, lo forziamo a 0.60$
             if (stop_teorico - ingresso_vst) > STOP_MAX_TOLLERATO or (stop_teorico - ingresso_vst) <= 0:
                 stop_loss_vst = ingresso_vst + STOP_MAX_TOLLERATO
             else:
@@ -144,7 +142,7 @@ if st.button("🚀 GENERA SEGNALE OPERATIVO"):
         col_rilievo1.metric(label="🔍 Prezzo Attuale Rilevato", value=f"{prezzo_attuale:.2f} USD")
         col_rilievo2.metric(label="🎯 Affidabilità Segnale IA", value=f"{qualita_segnale:.2f}%")
         
-        # Blocco Orario Italiano perfettamente allineato e indentato
+        # Blocco Orario Italiano
         ora_utc = datetime.utcnow()
         ora_italiana_ora = (ora_utc.hour + 2) % 24
         ora_italiana_stringa = f"{ora_italiana_ora:02d}:{ora_utc.minute:02d}:{ora_utc.second:02d}"
