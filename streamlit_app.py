@@ -7,21 +7,32 @@ import os
 import pytz
 
 # CONFIGURAZIONE PAGINA
-st.set_page_config(page_title="Crude Oil Trading Assistant v4.3", layout="wide", page_icon="🛢️")
+st.set_page_config(page_title="Crude Oil Trading Assistant v4.3.1", layout="wide", page_icon="🛢️")
 
-st.title("🛢️ Crude Oil Trading Assistant v4.3")
-st.subheader("Algoritmo Quantitativo: Filtro Compressione (Bollinger) e Qualità del Segnale a Stelle")
+st.title("🛢️ Crude Oil Trading Assistant v4.3.1")
+st.subheader("Algoritmo Quantitativo: Filtro Compressione e Stelle (Bug Fix Tabella)")
 st.markdown("---")
 
 # FILE DATABASE PERMANENTE
 FILE_DIARIO = "diario_trading.csv"
 
+# Definiamo le colonne standard per evitare disallineamenti nel CSV
+COLONNE_DIARIO = [
+    "Data/Ora", "Direzione", "Qualità", "Trigger", "SL Initial", "TP", "Contratti", "Prezzo Uscita Fineco", "Esito", "Profitto (€)"
+]
+
 if os.path.exists(FILE_DIARIO):
-    diario_df = pd.read_csv(FILE_DIARIO)
+    try:
+        diario_df = pd.read_csv(FILE_DIARIO)
+        # Forza il riallineamento delle colonne se carichi un vecchio file
+        for col in COLONNE_DIARIO:
+            if col not in diario_df.columns:
+                diario_df[col] = "--"
+        diario_df = diario_df[COLONNE_DIARIO]
+    except:
+        diario_df = pd.DataFrame(columns=COLONNE_DIARIO)
 else:
-    diario_df = pd.DataFrame(columns=[
-        "Data/Ora", "Direzione", "Qualità", "Trigger", "SL Initial", "TP", "Contratti", "Prezzo Uscita Fineco", "Esito", "Profitto (€)"
-    ])
+    diario_df = pd.DataFrame(columns=COLONNE_DIARIO)
 
 # GESTIONE ORARIA
 ZONA_IT = pytz.timezone('Europe/Rome')
@@ -32,7 +43,7 @@ st.sidebar.markdown("### 🛠️ Configurazione Rischio Dinamico")
 base_risk = st.sidebar.number_input("Rischio Base (2 Stelle) in €:", min_value=10, max_value=200, value=50)
 cuscinetto_tp = st.sidebar.slider("Cuscinetto TP (USD):", min_value=0.02, max_value=0.10, value=0.05, step=0.01)
 
-# 1. GENERAZIONE SEGNALE LIVE V4.3
+# 1. GENERAZIONE SEGNALE LIVE V4.3.1
 st.header("⚡ Scansione Mercato e Valutazione Qualità (Stelle)")
 
 if st.button("🚀 AVVIA SCANSIONE QUANTITATIVA"):
@@ -52,7 +63,6 @@ if st.button("🚀 AVVIA SCANSIONE QUANTITATIVA"):
                 banda_inferiore = ma20_5m - (2 * std20_5m)
                 larghezza_bande = (banda_superiore.iloc[-1] - banda_inferiore.iloc[-1])
                 
-                # Sotto i 15 centesimi di larghezza, il mercato è in forte compressione (pericoloso)
                 is_compressione = larghezza_bande < 0.15
                 
                 # CALCOLO ATR DAILY
@@ -73,7 +83,6 @@ if st.button("🚀 AVVIA SCANSIONE QUANTITATIVA"):
                 
                 dati_5min['EMA_21'] = dati_5min['Close'].ewm(span=21, adjust=False).mean()
                 ema_5min_attuale = dati_5min['EMA_21'].iloc[-1]
-                trend_5min_bull = prezzo_attuale >= ema_5min_attuale
                 
                 # DETERMINAZIONE DIREZIONE
                 if prezzo_attuale < ema_5min_attuale:
@@ -97,20 +106,19 @@ if st.button("🚀 AVVIA SCANSIONE QUANTITATIVA"):
                     tp = round(trigger + (distanza_sl * 1.5) - cuscinetto_tp, 3)
                     allineato = trend_daily_bull
 
-                # 📊 ATTRIBUZIONE DELLE STELLE E DEL BUDGET DI RISCHIO
+                # STELLE
                 if is_compressione:
                     stelle = "⭐ (1 Stella - COMPRESSIONE)"
-                    budget_rischio = round(base_risk * 0.4) # Rischio ridotto al 40% (es. 20€)
+                    budget_rischio = round(base_risk * 0.4)
                 elif allineato:
                     stelle = "⭐⭐⭐ (3 Stelle - CECCHINO ALINEATO)"
-                    budget_rischio = round(base_risk * 1.5) # Rischio aumentato al 150% (es. 75€)
+                    budget_rischio = round(base_risk * 1.5)
                 else:
                     stelle = "⭐⭐ (2 Stelle - Standard)"
                     budget_rischio = base_risk
                 
                 contratti_consigliati = max(1, int(budget_rischio / (distanza_sl * 100)))
                 
-                # VISUALIZZAZIONE RISULTATI
                 st.info(f"📊 Prezzo Attuale: **{prezzo_attuale} USD** | Larghezza Bollinger: **{round(larghezza_bande, 3)}**")
                 
                 col_st1, col_st2, col_st3 = st.columns(3)
@@ -134,8 +142,7 @@ if st.button("🚀 AVVIA SCANSIONE QUANTITATIVA"):
                     "Contratti": contratti_consigliati,
                     "Prezzo Uscita Fineco": "--",
                     "Esito": "IN CORSO ⏳",
-                    "Profitto (€)": 0.0,
-                    "budget_allocato": budget_rischio
+                    "Profitto (€)": 0.0
                 }
             else:
                 st.error("Errore nel caricamento dati.")
@@ -145,7 +152,7 @@ if st.button("🚀 AVVIA SCANSIONE QUANTITATIVA"):
 # 2. CONFERMA
 if 'nuovo_trade_temp' in st.session_state:
     st.markdown("---")
-    st.write("### 🗹 Conferma Esecuzione Fineco")
+    st.write("### 🗹 Confirm Esecuzione Fineco")
     prezzo_reale = st.number_input("Prezzo Reale Eseguito:", value=st.session_state.nuovo_trade_temp["Trigger"], step=0.001, format="%.3f")
     giuro = st.checkbox("Accetto la size consigliata in base alle Stelle del segnale.")
     
@@ -153,8 +160,6 @@ if 'nuovo_trade_temp' in st.session_state:
         if giuro:
             st.session_state.nuovo_trade_temp["Trigger"] = prezzo_reale
             nuovo_df = pd.DataFrame([st.session_state.nuovo_trade_temp])
-            if "budget_allocato" in nuovo_df.columns:
-                nuovo_df = nuovo_df.drop(columns=["budget_allocato"])
             diario_df = pd.concat([diario_df, nuovo_df], ignore_index=True)
             diario_df.to_csv(FILE_DIARIO, index=False)
             st.success("Operazione registrata!")
@@ -181,10 +186,16 @@ if not posizioni_aperte.empty:
                 diario_df.to_csv(FILE_DIARIO, index=False)
                 st.rerun()
 
+# 4. BUG FIX APPLICATO QUI (.map() al posto di .applymap())
 if not diario_df.empty:
+    st.write("### Diario Completo")
     def colora_esito(val):
         if val == "GAIN ✅": return 'background-color: rgba(40, 167, 69, 0.2)'
         elif val == "LOSS ❌": return 'background-color: rgba(220, 53, 69, 0.2)'
         elif val == "IN CORSO ⏳": return 'background-color: rgba(255, 193, 7, 0.2)'
         return ''
-    st.dataframe(diario_df.style.applymap(colora_esito, subset=['Esito']))
+    
+    # Visualizzazione pulita e robusta
+    st.dataframe(diario_df.style.map(colora_esito, subset=['Esito']))
+else:
+    st.info("Nessun trade registrato nel database.")
