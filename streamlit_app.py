@@ -35,13 +35,11 @@ st.markdown("---")
 
 # --- GESTIONE DATABASE CSV ---
 FILE_DIARIO = "diario_trading.csv"
-# Abbiamo aggiunto le colonne per i certificati Knockout
 COLONNE_DIARIO = ["Data/Ora", "Direzione", "Qualità", "Trigger", "SL Initial", "TP", "Contratti", "Prezzo Uscita Fineco", "Esito", "Profitto (€)", "Prezzo KO IN (€)", "Prezzo KO OUT (€)"]
 
 def load_diario():
     if os.path.exists(FILE_DIARIO):
         df = pd.read_csv(FILE_DIARIO)
-        # Assicura retrocompatibilità con vecchi file
         for col in COLONNE_DIARIO:
             if col not in df.columns:
                 df[col] = "--"
@@ -62,7 +60,6 @@ tipo_strumento = st.sidebar.selectbox("Strumento Utilizzato:", ["Fineco Knockout
 base_risk = st.sidebar.number_input("Rischio Base (2 Stelle) in €:", min_value=10, max_value=1000, value=50, step=10)
 cuscinetto_tp = st.sidebar.slider("Cuscinetto TP (USD sul WTI):", min_value=0.02, max_value=0.10, value=0.05, step=0.01)
 
-# --- RENDERING BARRA LATERALE V-ALPHA ---
 if st.session_state.valpha_metrics:
     v_m = st.session_state.valpha_metrics
     st.sidebar.markdown("---")
@@ -94,7 +91,6 @@ if st.button("🚀 AVVIA SCANSIONE QUANTITATIVA"):
             if not dati_daily.empty and not dati_5min.empty:
                 prezzo_attuale = round(dati_5min['Close'].iloc[-1], 3)
                 
-                # --- V-ALPHA ---
                 last_5d = dati_daily.iloc[-6:-1] 
                 supporto_va = last_5d['Low'].min()
                 resistenza_va = last_5d['High'].max()
@@ -108,7 +104,6 @@ if st.button("🚀 AVVIA SCANSIONE QUANTITATIVA"):
 
                 st.session_state.valpha_metrics = {"supporto": supporto_va, "resistenza": resistenza_va, "status": v_status, "trigger": v_trig, "sl": v_sl, "tp": v_tp}
                 
-                # --- STRATEGIA PRINCIPALE ---
                 ma20_5m = dati_5min['Close'].rolling(window=20).mean()
                 std20_5m = dati_5min['Close'].rolling(window=20).std()
                 banda_sup = ma20_5m + (2 * std20_5m)
@@ -181,9 +176,17 @@ if st.session_state.ultimo_segnale:
     s = st.session_state.ultimo_segnale
     st.info(f"📊 Prezzo Attuale WTI: **{s['prezzo_attuale']} USD** | Larghezza Bollinger: **{round(s['larghezza_bande'], 3)}**")
     
+    # --- RIGHE AGGIUNTE PER VEDERE DIREZIONE ---
+    st.markdown(f"### 🎯 DIREZIONE: {s['direzione']}")
+    if s['direzione'] == "LONG":
+        st.success("Analisi: Tendenza LONG confermata")
+    else:
+        st.error("Analisi: Tendenza SHORT confermata")
+    # -------------------------------------------
+    
     col_st1, col_st2 = st.columns(2)
     col_st1.metric("QUALITÀ SEGNALE", s['stelle'])
-    col_st2.metric("RISCHIO DA INVESTIRE (Capitale per il Certificato/SL)", f"{s['budget_rischio']} €")
+    col_st2.metric("RISCHIO DA INVESTIRE", f"{s['budget_rischio']} €")
     
     st.write(f"📍 **LIVELLI SOTTOSTANTE WTI:** Ingresso a **{s['trigger']}** | Stop Loss a **{s['sl']}** | Take Profit a **{s['tp']}**")
 
@@ -195,7 +198,7 @@ if st.session_state.nuovo_trade_temp:
     st.write(f"### 🗹 Registra Esecuzione su {tipo_strumento}")
     
     if "Knockout" in tipo_strumento:
-        st.write("Inserisci i dati esatti del Certificato Knockout (Turbo) acquistato su Fineco:")
+        st.write("Inserisci i dati esatti del Certificato Knockout acquistato su Fineco:")
         col_in1, col_in2 = st.columns(2)
         with col_in1:
             ko_in = st.number_input("Prezzo Acquisto Certificato (€):", min_value=0.01, value=1.00, step=0.01, format="%.2f")
@@ -246,7 +249,6 @@ posizioni_aperte = diario_df[diario_df["Esito"] == "IN CORSO ⏳"]
 
 if not posizioni_aperte.empty:
     for idx, row in posizioni_aperte.iterrows():
-        # Controlla se il trade era stato aperto usando certificati (ha un valore nel Prezzo KO IN)
         is_knockout = str(row.get("Prezzo KO IN (€)", "--")) != "--"
 
         with st.expander(f"⚙️ {row['Direzione']} | Data: {row['Data/Ora']} | Q.tà: {row['Contratti']}"):
@@ -271,15 +273,12 @@ if not posizioni_aperte.empty:
                     profitto = 0.0
                 else:
                     if is_knockout:
-                        # CALCOLO PERFETTO KNOCKOUT: sia Call (Long) che Put (Short) generano profitto se Vendita > Acquisto!
                         profitto = (prezzo_uscita - float(row["Prezzo KO IN (€)"])) * qta
                     else:
-                        # Calcolo CFD WTI Tradizionale
                         moltiplicatore = 1000 if "Standard" in tipo_strumento else 100
                         punti = (prezzo_uscita - float(row["Trigger"])) if row["Direzione"] == "LONG" else (float(row["Trigger"]) - prezzo_uscita)
                         profitto = punti * moltiplicatore * qta
                 
-                # Salvataggio dati
                 if is_knockout:
                     diario_df.at[idx, "Prezzo KO OUT (€)"] = prezzo_uscita
                 else:
@@ -308,29 +307,18 @@ if not diario_df.empty:
     
     st.dataframe(diario_df.style.map(style_dataframe, subset=['Esito']), use_container_width=True)
     
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_html=True)
     
-    # --- ZONA ELIMINAZIONE TRADE ---
     with st.expander("🗑️ Elimina un'operazione dal diario"):
-        st.warning("Attenzione: l'eliminazione è irreversibile e rimuoverà il trade dal file di salvataggio.")
-        
-        # Creiamo un dizionario per mappare una stringa leggibile all'indice reale del DataFrame
+        st.warning("Attenzione: l'eliminazione è irreversibile.")
         opzioni_delete = {f"ID: {idx} | {row['Data/Ora']} | {row['Direzione']} | Esito: {row['Esito']}": idx for idx, row in diario_df.iterrows()}
-        
         trade_da_eliminare = st.selectbox("Seleziona l'operazione da cancellare:", list(opzioni_delete.keys()))
         
         if st.button("🗑️ ELIMINA DEFINITIVAMENTE"):
             idx_to_drop = opzioni_delete[trade_da_eliminare]
-            
-            # Ricarichiamo il file per sicurezza estrema
             df_aggiornato = load_diario()
-            
-            # Eliminiamo la riga selezionata e resettiamo l'indice
             df_aggiornato = df_aggiornato.drop(idx_to_drop).reset_index(drop=True)
-            
-            # Salviamo il nuovo file senza quella riga
             df_aggiornato.to_csv(FILE_DIARIO, index=False)
-            
             st.success("Operazione eliminata con successo!")
             st.rerun()
 else:
