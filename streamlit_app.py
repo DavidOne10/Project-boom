@@ -80,8 +80,8 @@ if st.button("🚀 AVVIA SCANSIONE QUANTITATIVA"):
     with st.spinner("Analizzando dati..."):
         try:
             ticker = yf.Ticker("CL=F")
-            dati_daily = ticker.history(period="60d", interval="1d", threads=True)
-            dati_5min = ticker.history(period="3d", interval="5m", threads=True)
+            dati_daily = ticker.history(period="60d", interval="1d")
+            dati_5min = ticker.history(period="3d", interval="5m")
             
             if not dati_daily.empty and not dati_5min.empty:
                 prezzo_attuale = round(dati_5min['Close'].iloc[-1], 3)
