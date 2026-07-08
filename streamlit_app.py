@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime
 
-st.set_page_config(page_title="V-Alpha PRO | Auto-Data", layout="wide")
+st.set_page_config(page_title="V-Alpha PRO | Definitivo", layout="wide")
 
 # --- MEMORIA DI SISTEMA ---
 if 'supporto' not in st.session_state: st.session_state.supporto = 74.20
@@ -11,13 +11,11 @@ if 'resistenza' not in st.session_state: st.session_state.resistenza = 75.10
 if 'atr' not in st.session_state: st.session_state.atr = 0.20
 
 # --- FUNZIONE SCARICAMENTO DATI ---
-@st.cache_data(ttl=60) # Aggiorna i dati ogni 60 secondi
+@st.cache_data(ttl=60)
 def get_live_data():
     try:
         df = yf.download("CL=F", period="1d", interval="5m")
-        if not df.empty:
-            return df
-        return None
+        return df
     except:
         return None
 
@@ -26,18 +24,22 @@ st.title("🚀 V-Alpha | Sistema a Scaricamento Automatico")
 # Scarica dati
 df = get_live_data()
 
-if df is not None:
-    prezzo_reale = float(df['Close'].iloc[-1])
-    # Calcolo automatico dinamico basato sui dati
+# --- CORREZIONE: Estrazione sicura a prova di errore ---
+if df is not None and not df.empty:
+    # Estraiamo il valore scalare in modo esplicito e sicuro
+    valore_raw = df['Close'].iloc[-1]
+    prezzo_reale = float(valore_raw.item() if hasattr(valore_raw, 'item') else valore_raw)
+    
+    # Calcolo dinamico
     high = float(df['High'].max())
     low = float(df['Low'].min())
     st.session_state.supporto = round(low + (high - low) * 0.2, 3)
     st.session_state.resistenza = round(high - (high - low) * 0.2, 3)
     st.session_state.atr = round((high - low) / 5, 3)
-    st.success("✅ Dati scaricati e indicatori aggiornati in tempo reale.")
+    st.success("✅ Dati aggiornati in tempo reale.")
 else:
-    st.warning("⚠️ Connessione a Yahoo Finance instabile. Utilizzo ultimi valori in memoria.")
-    prezzo_reale = 74.64 # Default di sicurezza
+    st.warning("⚠️ Dati non disponibili. Uso valori in memoria.")
+    prezzo_reale = 74.64
 
 # --- LOGICA PREDITTIVA (Preset Ore 10:00) ---
 st.subheader("📊 Analisi V-Alpha (Preset 10:00)")
