@@ -28,9 +28,10 @@ def load_data():
 def calcola_indicatori(df):
     high = df['High'].max()
     low = df['Low'].min()
-    supporto = round(low + (high - low) * 0.2, 3)
-    resistenza = round(high - (high - low) * 0.2, 3)
-    atr = round((high - low) / 5, 3)
+    # Calcolo V-Alpha
+    supporto = round(float(low + (high - low) * 0.2), 3)
+    resistenza = round(float(high - (high - low) * 0.2), 3)
+    atr = round(float((high - low) / 5), 3)
     return supporto, resistenza, atr
 
 # --- INTERFACCIA ---
@@ -42,15 +43,20 @@ if stato_colore == "success": st.success(f"STATO MERCATO: {stato_orario}")
 elif stato_colore == "warning": st.warning(f"STATO MERCATO: {stato_orario}")
 else: st.info(f"STATO MERCATO: {stato_orario}")
 
+# --- LOGICA DI GESTIONE DATI SICURA ---
 df = load_data()
+prezzo_base = 70.00
+supporto, resistenza, atr = 0.0, 0.0, 0.0
 
-# Gestione sicura del prezzo
 if not df.empty and 'Close' in df.columns:
-    prezzo_base = float(df['Close'].iloc[-1])
-    supporto, resistenza, atr = calcola_indicatori(df)
+    try:
+        valore_raw = df['Close'].iloc[-1]
+        # Forza conversione a float
+        prezzo_base = float(valore_raw.item() if hasattr(valore_raw, 'item') else valore_raw)
+        supporto, resistenza, atr = calcola_indicatori(df)
+    except:
+        st.warning("⚠️ Errore di lettura dati: inserisci il prezzo manualmente.")
 else:
-    prezzo_base = 70.00
-    supporto, resistenza, atr = 0.0, 0.0, 0.0
     st.warning("⚠️ Dati non aggiornati: inserisci il prezzo manualmente.")
 
 # Sidebar
@@ -65,17 +71,19 @@ col1.metric("Supporto", supporto)
 col2.metric("Prezzo Mercato", prezzo_reale)
 col3.metric("Resistenza", resistenza)
 
-if prezzo_reale > resistenza:
+# Logica Predittiva
+direzione = "NEUTRO"
+target, sl = 0.0, 0.0
+
+if resistenza > 0 and prezzo_reale > resistenza:
     direzione = "SHORT"
     target = round(prezzo_reale - (atr * 1.5), 3)
     sl = round(prezzo_reale + (atr * 0.8), 3)
-elif prezzo_reale < supporto and supporto != 0:
+elif supporto > 0 and prezzo_reale < supporto:
     direzione = "LONG"
     target = round(prezzo_reale + (atr * 1.5), 3)
     sl = round(prezzo_reale - (atr * 0.8), 3)
 else:
-    direzione = "NEUTRO"
-    target, sl = 0, 0
     st.warning("Prezzo in zona di consolidamento o dati mancanti.")
 
 if direzione != "NEUTRO":
