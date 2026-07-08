@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime
 
-st.set_page_config(page_title="V-Alpha PRO | Definitivo", layout="wide")
+st.set_page_config(page_title="V-Alpha PRO | Safe Mode", layout="wide")
 
 # --- MEMORIA DI SISTEMA ---
 if 'supporto' not in st.session_state: st.session_state.supporto = 74.20
@@ -14,6 +14,7 @@ if 'atr' not in st.session_state: st.session_state.atr = 0.20
 @st.cache_data(ttl=60)
 def get_live_data():
     try:
+        # Scarichiamo dati dell'ultima giornata
         df = yf.download("CL=F", period="1d", interval="5m")
         return df
     except:
@@ -24,21 +25,31 @@ st.title("🚀 V-Alpha | Sistema a Scaricamento Automatico")
 # Scarica dati
 df = get_live_data()
 
-# --- CORREZIONE: Estrazione sicura a prova di errore ---
+# --- CORREZIONE DEFINITIVA ---
 if df is not None and not df.empty:
-    # Estraiamo il valore scalare in modo esplicito e sicuro
-    valore_raw = df['Close'].iloc[-1]
-    prezzo_reale = float(valore_raw.item() if hasattr(valore_raw, 'item') else valore_raw)
-    
-    # Calcolo dinamico
-    high = float(df['High'].max())
-    low = float(df['Low'].min())
-    st.session_state.supporto = round(low + (high - low) * 0.2, 3)
-    st.session_state.resistenza = round(high - (high - low) * 0.2, 3)
-    st.session_state.atr = round((high - low) / 5, 3)
-    st.success("✅ Dati aggiornati in tempo reale.")
+    try:
+        # Estrazione sicura del valore Close
+        prezzo_raw = df['Close'].iloc[-1]
+        prezzo_reale = float(prezzo_raw.item() if hasattr(prezzo_raw, 'item') else prezzo_raw)
+        
+        # Estrazione sicura High e Low
+        high_raw = df['High'].max()
+        low_raw = df['Low'].min()
+        
+        high = float(high_raw.item() if hasattr(high_raw, 'item') else high_raw)
+        low = float(low_raw.item() if hasattr(low_raw, 'item') else low_raw)
+        
+        # Aggiornamento memoria
+        st.session_state.supporto = round(low + (high - low) * 0.2, 3)
+        st.session_state.resistenza = round(high - (high - low) * 0.2, 3)
+        st.session_state.atr = round((high - low) / 5, 3)
+        
+        st.success("✅ Dati aggiornati in tempo reale.")
+    except Exception as e:
+        st.warning("⚠️ Errore nel processamento dati, uso memoria.")
+        prezzo_reale = 74.64
 else:
-    st.warning("⚠️ Dati non disponibili. Uso valori in memoria.")
+    st.warning("⚠️ Connessione a Yahoo Finance instabile. Uso ultimi valori in memoria.")
     prezzo_reale = 74.64
 
 # --- LOGICA PREDITTIVA (Preset Ore 10:00) ---
