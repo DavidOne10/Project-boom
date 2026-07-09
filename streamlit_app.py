@@ -8,15 +8,18 @@ st.set_page_config(page_title="V-Alpha PRO | Predittività", layout="centered")
 # --- MOTORE DATI ROBUSTO ---
 @st.cache_data(ttl=60)
 def get_data():
-    # Tenta prima con il WTI (CL=F), poi fallback su Brent (BZ=F) o USOIL (USOIL=X)
     tickers = ["CL=F", "BZ=F", "USOIL=X"]
     for ticker in tickers:
         try:
-            # auto_adjust per evitare problemi di formattazione prezzi
             df = yf.download(ticker, period="1d", interval="5m", auto_adjust=True)
-            # Verifica che il dataframe sia valido e contenga la colonna 'Close'
-            if not df.empty and 'Close' in df.columns:
-                return df
+            
+            if not df.empty:
+                # FIX CRUCIALE: Rimuove il doppio livello (MultiIndex) creato da yfinance
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                
+                if 'Close' in df.columns:
+                    return df
         except:
             continue
     return None
@@ -27,15 +30,14 @@ st.title("🚀 V-Alpha | Controllo Operativo")
 # Recupero Dati
 df = get_data()
 
-# --- CONTROLLO ERRORI CRUCIALE ---
-# Se df è None o vuoto, fermiamo tutto qui per evitare crash
+# --- CONTROLLO ERRORI ---
 if df is None or df.empty:
     st.error("⚠️ I server di Yahoo Finance non rispondono o i dati non sono disponibili in questo momento. Riprova tra poco.")
     st.stop() 
 
 # --- CALCOLI V-ALPHA ---
 try:
-    # Estrazione valori e conversione in float per sicurezza
+    # Ora che le colonne sono piatte, l'estrazione dei singoli numeri è sicura al 100%
     prezzo_reale = round(float(df['Close'].iloc[-1]), 3)
     high = float(df['High'].max())
     low = float(df['Low'].min())
@@ -43,11 +45,9 @@ try:
     # Calcolo Livelli
     supporto = round(low + (high - low) * 0.2, 3)
     resistenza = round(high - (high - low) * 0.2, 3)
-    
-    # Calcolo ATR (usando un quinto del range giornaliero come proxy)
     atr = round((high - low) / 5, 3)
 except Exception as e:
-    st.error(f"Errore durante il calcolo dei livelli: {e}")
+    st.error(f"Errore imprevisto durante il calcolo dei livelli: {e}")
     st.stop()
 
 # --- DASHBOARD LIVE ---
@@ -62,7 +62,7 @@ st.markdown("---")
 # --- PANNELLO DI PREDITTIVITÀ ---
 st.subheader("🔮 Pannello di Predittività Attiva")
 
-# Calcolo Distanze (Quanto manca al segnale?)
+# Calcolo Distanze
 dist_supp = round(prezzo_reale - supporto, 3)
 dist_res = round(resistenza - prezzo_reale, 3)
 min_dist = min(dist_supp, dist_res)
@@ -75,7 +75,6 @@ with col_p1:
         st.write("Il prezzo è in compressione verso il **SUPPORTO**.")
         st.success("PREDIZIONE: Prepararsi per possibile **LONG** 🟢")
         
-        # Calcolo dei target
         target = round(supporto + (atr * 2.0), 3)
         stop_loss = round(supporto - (atr * 0.6), 3)
         livello_chiave = supporto
@@ -84,7 +83,6 @@ with col_p1:
         st.write("Il prezzo è in compressione verso la **RESISTENZA**.")
         st.error("PREDIZIONE: Prepararsi per possibile **SHORT** 🔴")
         
-        # Calcolo dei target
         target = round(resistenza - (atr * 2.0), 3)
         stop_loss = round(resistenza + (atr * 0.6), 3)
         livello_chiave = resistenza
@@ -92,7 +90,6 @@ with col_p1:
 
 with col_p2:
     st.markdown("### ⏳ Qualità & Tempistica")
-    # Calcolo qualità segnale basato sulla vicinanza (più è vicino, più il segnale è 'caldo')
     if min_dist < (atr * 2):
         qualita = "🔥 ALTA (Livello a portata di mano)"
     else:
