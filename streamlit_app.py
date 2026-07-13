@@ -103,4 +103,4 @@ st.write(f"In base al calcolo statistico del modello, se il prezzo valida l'area
 c_ord1, c_ord2, c_ord3 = st.columns(3)
 c_ord1.metric(f"Ingresso a Limite ({direzione})", livello_ingresso)
 c_ord2.metric("Take Profit (Target)", take_profit)
-c_ord3.metric("Stop Loss (Protezione)", stop_loss) 
+c_ord3.metric("Stop Loss (Protezione)", stop_loss)
