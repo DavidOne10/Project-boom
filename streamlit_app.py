@@ -5,9 +5,9 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
 # --- CONFIGURAZIONE INTERFACCIA ---
-st.set_page_config(page_title="V-Alpha PRO | Pure AI Trading", layout="centered")
+st.set_page_config(page_title="V-Alpha PRO | Knockout Trading AI", layout="centered")
 
-st.title("🤖 V-Alpha PRO | Random Forest AI (Pure Mode)")
+st.title("🤖 V-Alpha PRO | Random Forest AI (Knockout Edition)")
 
 # --- 1. MOTORE ADDESTRAMENTO RANDOM FOREST (DAILY) ---
 @st.cache_data(ttl=3600)  # Aggiorna e riaddestra il modello ogni ora con i nuovi dati
@@ -21,7 +21,7 @@ def addestra_modello_ia(ticker):
         if dati.empty or len(dati) < 100:
             return None, None
 
-        # Indicatori Tecnici
+        # Indicatori Tecnici (Inclusa Volatilità)
         dati['Ritorno_Prezzo'] = dati['Close'].pct_change()
         dati['Media_20'] = dati['Close'].rolling(window=20).mean()
         dati['Media_50'] = dati['Close'].rolling(window=50).mean()
@@ -54,7 +54,7 @@ def addestra_modello_ia(ticker):
         variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
                      'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
 
-        # Dataset per l'addestramento (esclude l'ultima riga che ha Target NaN)
+        # Dataset per l'addestramento (esclude l'ultima riga con Target NaN)
         dati_training = dati.dropna(subset=variabili + ['Target'])
         
         X = dati_training[variabili]
@@ -64,7 +64,7 @@ def addestra_modello_ia(ticker):
         modello = RandomForestClassifier(n_estimators=150, min_samples_leaf=5, random_state=42)
         modello.fit(X, y)
 
-        # Estrazione dell'ultimo dato disponibile con le 11 variabili aggiornate ad OGGI
+        # Estrazione dell'ultimo dato disponibile aggiornato ad OGGI
         ultimo_dato_fresco = dati[variabili].iloc[-1:]
 
         return modello, ultimo_dato_fresco
@@ -105,7 +105,7 @@ probabilita = modello_rf.predict_proba(ultimo_dato_ia)[0]
 predizione_ia = modello_rf.predict(ultimo_dato_ia)[0]  # 1 = LONG, 0 = SHORT
 confidenza_ia = probabilita[predizione_ia] * 100
 
-# Parametri Intraday Live
+# Parametri Intraday Live & Volatilità ATR
 prezzo_live = round(float(df_5m['Close'].iloc[-1]), 3)
 oggi = df_5m.index[-1].date()
 df_today = df_5m[df_5m.index.date == oggi]
@@ -121,7 +121,7 @@ supporto_operativo = round(low_mattina + (range_totale * 0.2), 3)
 resistenza_operativa = round(high_mattina - (range_totale * 0.2), 3)
 atr = round(range_totale / 5, 3)
 
-# --- GESTIONE CAPITALE E RISCHIO ---
+# --- GESTIONE RISCHIO MONETA ---
 st.sidebar.header("💰 Gestione Capitale")
 capitale_utente = st.sidebar.number_input("Inserisci Capitale (€):", value=10000.0, step=500.0)
 
@@ -166,15 +166,26 @@ with c_pred1:
         stop_loss = round(high_mattina + (atr * 0.2), 3)
 
 with c_pred2:
-    st.markdown("### 📊 Affidabilità e Rischio")
+    st.markdown("### 📊 Affidabilità & Rischio")
     st.metric("Confidenza IA", f"{confidenza_ia:.1f}%")
-    st.metric("Rischio Posizione", f"{pct_rischio*100:.0f}% ({euro_da_rischiare:.2f} €)")
+    st.metric("Rischio Max Profilo", f"{pct_rischio*100:.0f}% ({euro_da_rischiare:.2f} €)")
 
-# --- PIANO OPERATIVO ISTANTANEO ---
+# --- PIANO OPERATIVO SPECIFICO PER KNOCKOUT ---
 st.markdown("---")
-st.subheader("📋 Ordini Pronti per l'Esecuzione")
+st.subheader("📋 Parametri Ordine Knockout (1 Contratto)")
+
+distanza_ko = abs(livello_ingresso - stop_loss)
+rischio_stimato_euro = distanza_ko * 100  # 1 contratto standard WTI (1$ = 100$)
 
 c_ord1, c_ord2, c_ord3 = st.columns(3)
-c_ord1.metric(f"Ingresso a Limite ({direzione})", livello_ingresso)
-c_ord2.metric("Take Profit (Target)", take_profit)
-c_ord3.metric("Stop Loss (Protezione)", stop_loss)
+c_ord1.metric(f"Prezzo Ingresso ({direzione})", livello_ingresso)
+c_ord2.metric("Target Profit (TP)", take_profit)
+c_ord3.metric("Barriera KNOCKOUT (KO)", stop_loss)
+
+st.info(
+    f"🛡️ **Istruzioni Operative per il Broker:**\n"
+    f"- **Direzione:** `{direzione}`\n"
+    f"- **Prezzo d'Ingresso:** `{livello_ingresso}`\n"
+    f"- **Barriera Knockout:** `{stop_loss}`\n"
+    f"- **Distanza Barriera KO:** `{distanza_ko:.3f}$` | **Perdita Max Effettiva (1 Contratto):** `~{rischio_stimato_euro:.2f} €`"
+)
