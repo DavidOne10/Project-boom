@@ -2,7 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime, time
+from datetime import datetime
 import os
 import pytz
 from sklearn.ensemble import RandomForestClassifier
@@ -91,10 +91,12 @@ def addestra_modello_bilanciato(ticker):
         if dati.empty or len(dati) < 100:
             return None, None, None
 
+        # Creazione del target (prima della rimozione dei NaN per evitare data leakage sull'ultima candela)
+        dati['Target'] = np.where(dati['Close'].shift(-1) > dati['Close'], 1, 0)
+
         dati['Ritorno_Prezzo'] = dati['Close'].pct_change()
         dati['Media_20'] = dati['Close'].rolling(window=20).mean()
         dati['Media_50'] = dati['Close'].rolling(window=50).mean()
-        dati['Target'] = np.where(dati['Close'].shift(-1) > dati['Close'], 1, 0)
 
         # RSI (14)
         delta = dati['Close'].diff()
@@ -115,7 +117,18 @@ def addestra_modello_bilanciato(ticker):
         dati['MACD_Signal'] = dati['MACD'].ewm(span=9, adjust=False).mean()
 
         variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD', 'MACD_Signal', 'Dist_Media50', 'Larghezza_Bande']
-        dati_training = dati.dropna(subset=variabili + ['Target'])
+        
+        # Eliminiamo le righe con NaN causati dagli indicatori
+        dati = dati.dropna(subset=variabili)
+        
+        # L'ultima riga ha un 'Target' inesistente (shift futuro). La isoliamo per fare la previsione odierna
+        ultimo_dato = dati[variabili].iloc[[-1]]
+        close_macro = float(dati['Close'].iloc[-1])
+        ma50_macro = float(dati['Media_50'].iloc[-1])
+        trend_bullish = close_macro > ma50_macro
+
+        # Il training set viene creato ESCLUDENDO l'ultima riga
+        dati_training = dati.iloc[:-1].copy()
         
         X = dati_training[variabili]
         y = dati_training['Target']
@@ -123,11 +136,6 @@ def addestra_modello_bilanciato(ticker):
         # Random Forest bilanciato per evitare over-fitting
         modello = RandomForestClassifier(n_estimators=100, max_depth=6, min_samples_leaf=15, random_state=42)
         modello.fit(X, y)
-
-        ultimo_dato = dati[variabili].iloc[-1:]
-        close_macro = float(dati['Close'].iloc[-1])
-        ma50_macro = float(dati['Media_50'].iloc[-1])
-        trend_bullish = close_macro > ma50_macro
 
         return modello, ultimo_dato, trend_bullish
     except Exception:
@@ -155,48 +163,46 @@ if df_5m is None or df_5m.empty:
     st.error("⚠️ Errore di connessione ai flussi dati di mercato.")
     st.stop()
 
-prezzo_live = round(float(df_5m['Close'].iloc[-1]), 3)
+# MODIFICA: Arrotondamento WTI sempre a 2 decimali
+prezzo_live = round(float(df_5m['Close'].iloc[-1]), 2)
 
-# Calcolo Canali Intraday e ATR
-oggi = df_5m.index[-1].date()
-df_today = df_5m[df_5m.index.date == oggi]
-if df_today.empty: df_today = df_5m.tail(50)
+# MODIFICA: Analisi delle ultime 100 candele (finestra mobile 8 ore reali)
+# Questo garantisce dati solidi sia alle 10:00 che alle 14:30
+df_today = df_5m.tail(100)
 
 high_s = float(df_today['High'].max())
 low_s = float(df_today['Low'].min())
 range_tot = high_s - low_s
 
-supporto = round(low_s + (range_tot * 0.2), 3)
-resistenza = round(high_s - (range_tot * 0.2), 3)
-atr = round(range_tot / 5, 3)
+# MODIFICA: Arrotondamento WTI a 2 decimali
+supporto = round(low_s + (range_tot * 0.2), 2)
+resistenza = round(high_s - (range_tot * 0.2), 2)
+atr = round(range_tot / 5, 2)
 
 modello_ia, dati_ia, trend_bull_50 = addestra_modello_bilanciato(ticker_attivo)
 
+# Fallback di sicurezza rimosso, se il modello fallisce, l'app si blocca per proteggere il capitale
 if modello_ia is not None and dati_ia is not None:
     prob = modello_ia.predict_proba(dati_ia)[0]
     pred = modello_ia.predict(dati_ia)[0]
     confidenza = prob[pred] * 100
 else:
-    pred = 1 if prezzo_live < supporto else 0
-    confidenza = 52.0
-    trend_bull_50 = True
+    st.error("⚠️ Modello IA in calcolo o non disponibile. Riprova tra qualche minuto.")
+    st.stop()
 
-# Determinazione Direzione e Livelli con R:R calibrato
-dist_supp = prezzo_live - supporto
-dist_res = resistenza - prezzo_live
-
-if dist_supp < dist_res:
+# MODIFICA: Direzione determinata in modo assoluto dalla previsione dell'IA, non dal prezzo live
+if pred == 1:
     direzione = "LONG"
     ingresso = supporto
-    sl = round(low_s - (atr * 0.15), 3)
+    sl = round(low_s - (atr * 0.15), 2)
     dist_sl = abs(ingresso - sl)
-    tp = round(supporto + (dist_sl * rr_ratio), 3)
+    tp = round(supporto + (dist_sl * rr_ratio), 2)
 else:
     direzione = "SHORT"
     ingresso = resistenza
-    sl = round(high_s + (atr * 0.15), 3)
+    sl = round(high_s + (atr * 0.15), 2)
     dist_sl = abs(ingresso - sl)
-    tp = round(resistenza - (dist_sl * rr_ratio), 3)
+    tp = round(resistenza - (dist_sl * rr_ratio), 2)
 
 # Filtri di Selezione Bilanciata
 motivo_filtro = []
@@ -220,14 +226,14 @@ st.markdown(f"**Asset Monitorato:** `{ticker_attivo}` | **Soglia Confidenza:** {
 
 col1, col2, col3 = st.columns(3)
 col1.metric("Supporto Dinamico", supporto)
-col2.metric("Prezzo WTI Live", f"{prezzo_live:.3f} USD")
+col2.metric("Prezzo WTI Live", f"{prezzo_live:.2f} USD")
 col3.metric("Resistenza Dinamica", resistenza)
 
 st.markdown("---")
 
 if not segnale_valido:
     st.info("🛡️ **MERCATO IN PAUSA / FILTRO ATTIVO**")
-    st.write("Per mantenere un win rate costante del 55-60%, il sistema ha filtrato l'opportunità attuale in base ai parametri di coerenza:")
+    st.write("Per mantenere un win rate costante, il sistema ha filtrato l'opportunità attuale:")
     for m in motivo_filtro:
         st.markdown(f"- ⚠️ *{m}*")
 else:
@@ -237,11 +243,11 @@ else:
     c_i1.metric("DIREZIONE", direzione)
     c_i2.metric("QUALITÀ STATISTICA", "⭐⭐⭐ (BILANCIATA)")
 
-    st.markdown("### 📋 Parametri Operativi")
+    st.markdown("### 📋 Parametri Operativi (Ordini Pendenti Limit)")
     o1, o2, o3 = st.columns(3)
-    o1.metric("Ingresso / Trigger", ingresso)
-    o2.metric("Take Profit (Target)", tp)
-    o3.metric("Stop Loss (Protetto)", sl)
+    o1.metric("Ingresso / Trigger", f"{ingresso:.2f}")
+    o2.metric("Take Profit (Target)", f"{tp:.2f}")
+    o3.metric("Stop Loss (Protetto)", f"{sl:.2f}")
 
     # Position sizing basato su rischio bilanciato (1.5% del capitale)
     euro_rischio = capitale_conto * 0.015
@@ -255,7 +261,7 @@ else:
         else:
             contratti = max(1, int(euro_rischio / dist_punti))
     else:
-            contratti = 1
+        contratti = 1
 
     st.write(f"• **Rischio Operazione:** 1.5% ({euro_rischio:.2f} €) | **Taglia Consigliata:** {contratti} unità")
 
@@ -309,7 +315,7 @@ if not diario_df.empty:
                         punti = (val_uscita - px_in) if row['Direzione'] == 'LONG' else (px_in - val_uscita)
                         profitto = punti * molt * qta
                         
-                    diario_df.loc[idx, "Prezzo Uscita"] = val_uscita
+                    diario_df.loc[idx, "Prezzo Uscita"] = round(val_uscita, 2)
                     diario_df.loc[idx, "Esito"] = esito_scelto
                     diario_df.loc[idx, "Profitto (€)"] = round(profitto, 2)
                     diario_df.to_csv(FILE_DIARIO, index=False)
