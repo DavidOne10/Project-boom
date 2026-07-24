@@ -10,17 +10,16 @@ from sklearn.ensemble import RandomForestClassifier
 # ==========================================
 # 1. CONFIGURAZIONE PAGINA
 # ==========================================
-st.set_page_config(page_title="WTI AI Knockout", layout="wide", page_icon="🛢️")
+st.set_page_config(page_title="WTI AI Dual Engine", layout="wide", page_icon="🛢️")
 
-st.markdown("<h1 style='text-align: center; color: #D4AF37;'>🛢️ WTI KNOCKOUT AI ENGINE</h1>", unsafe_allow_html=True)
-st.markdown("<h4 style='text-align: center; color: #888;'>Filtro IA Predittiva Attivo | Sincronizzazione Live Fineco</h4>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #D4AF37;'>🛢️ WTI DUAL SCENARIO AI ENGINE</h1>", unsafe_allow_html=True)
+st.markdown("<h4 style='text-align: center; color: #888;'>Analisi Predittiva Simultanea Long / Short & Sincronizzazione Live</h4>", unsafe_allow_html=True)
 st.markdown("---")
 
 # ==========================================
-# 2. ACQUISIZIONE DATI (Senza Cache per Real-Time)
+# 2. ACQUISIZIONE DATI & MACHINE LEARNING
 # ==========================================
 def scarica_dati():
-    # Usiamo un try-except per scaricare i dati senza bloccare l'app
     df_5m = yf.download("CL=F", period="5d", interval="5m", auto_adjust=True, progress=False)
     df_1h = yf.download("CL=F", period="1mo", interval="1h", auto_adjust=True, progress=False)
     
@@ -73,30 +72,23 @@ df_1h = calcola_indicatori(df_1h)
 prob_long_ia, prob_short_ia = calcola_probabilita_ia(df_5m)
 
 # ==========================================
-# 3. PANNELLO LATERALE: SINCRONIZZAZIONE E FILTRI
+# 3. PANNELLO LATERALE: SINCRONIZZAZIONE
 # ==========================================
-st.sidebar.markdown("### 🔄 1. Sincronizza Dati")
+st.sidebar.markdown("### 🔄 Sincronizzazione Prezzo")
 prezzo_yahoo = float(df_5m['Close'].iloc[-1])
-prezzo_reale = st.sidebar.number_input("Prezzo Live Fineco (CFD):", value=prezzo_yahoo, step=0.01, 
-                                       help="Se Yahoo è in ritardo o su un altro contratto, scrivi qui il prezzo esatto di Fineco.")
-if st.sidebar.button("Forza Ricalcolo Immediato"):
+prezzo_reale = st.sidebar.number_input("Prezzo Live Fineco (CFD):", value=prezzo_yahoo, step=0.01)
+
+if st.sidebar.button("🔄 Aggiorna / Ricarica"):
     st.rerun()
 
-st.sidebar.markdown("### ⚙️ 2. Regole Motore IA")
-soglia_minima_ia = st.sidebar.slider("Soglia Minima Win Rate (%):", 50, 80, 55, 1, 
-                                     help="L'IA scarterà tutti i trade con probabilità inferiore a questa soglia.")
 rr_ratio = st.sidebar.slider("Rischio/Rendimento (R:R):", 1.0, 3.0, 1.6, 0.1)
 
-# Calcolo differenza di prezzo tra Fineco e Yahoo (Offset)
+# Offset e Allineamento
 offset_prezzo = prezzo_reale - prezzo_yahoo
-
-# Applichiamo l'offset agli indicatori chiave per allinearli al TUO grafico Fineco
 ultimo_prezzo = prezzo_reale
 ma40_5m = float(df_5m['MA_40'].iloc[-1]) + offset_prezzo
 rsi20_5m = float(df_5m['RSI_20'].iloc[-1])
 atr_5m = float(df_5m['ATR_14'].iloc[-1])
-
-trend_orario_bullish = (float(df_1h['Close'].iloc[-1]) + offset_prezzo) > (float(df_1h['MA_40'].iloc[-1]) + offset_prezzo)
 
 # Range Asiatico Sincronizzato
 df_5m.index = df_5m.index.tz_convert('Europe/Rome')
@@ -111,93 +103,65 @@ else:
     asian_low = ultimo_prezzo - 0.3
 
 # ==========================================
-# 4. MOTORE LOGICO
+# 4. CALCOLO DOPPIO SCENARIO (LONG & SHORT)
 # ==========================================
-direzione = "ATTESA"
-ingresso, sl, tp, barriera_ko, win_rate = 0.0, 0.0, 0.0, 0.0, 0.0
-motivo_scarto = ""
+# Scenario LONG (basato su Breakout Resistenza o supporto MA40)
+ing_long = round(max(asian_high, ma40_5m), 2)
+sl_long = round(ing_long - (atr_5m * 1.5), 2)
+tp_long = round(ing_long + ((ing_long - sl_long) * rr_ratio), 2)
+ko_long = round(sl_long - (atr_5m * 1.0), 2)
+t_trig_long = int(abs(ultimo_prezzo - ing_long) / max(atr_5m, 0.01)) * 5
+t_tp_long = int(abs(ing_long - tp_long) / max(atr_5m, 0.01)) * 5
 
-# Valutazione Tecnica
-if trend_orario_bullish and rsi20_5m < 45 and ultimo_prezzo >= (ma40_5m - 0.05):
-    direzione_temp = "LONG (Pullback Dinamico MA40)"
-    ingresso = round(ma40_5m, 2)
-    sl = round(ingresso - (atr_5m * 1.5), 2)
-    tp = round(ingresso + ((ingresso - sl) * rr_ratio), 2)
-    barriera_ko = round(sl - (atr_5m * 1.0), 2)
-    win_rate = prob_long_ia
-
-elif not trend_orario_bullish and rsi20_5m > 55 and ultimo_prezzo <= (ma40_5m + 0.05):
-    direzione_temp = "SHORT (Pullback Dinamico MA40)"
-    ingresso = round(ma40_5m, 2)
-    sl = round(ingresso + (atr_5m * 1.5), 2)
-    tp = round(ingresso - ((sl - ingresso) * rr_ratio), 2)
-    barriera_ko = round(sl + (atr_5m * 1.0), 2)
-    win_rate = prob_short_ia
-    
-else:
-    if ultimo_prezzo > asian_high:
-        direzione_temp = "LONG (Breakout Range)"
-        ingresso = round(asian_high, 2)
-        sl = round(ingresso - (atr_5m * 1.8), 2)
-        tp = round(ingresso + ((ingresso - sl) * rr_ratio), 2)
-        barriera_ko = round(sl - (atr_5m * 1.2), 2)
-        win_rate = prob_long_ia
-    elif ultimo_prezzo < asian_low:
-        direzione_temp = "SHORT (Breakout Range)"
-        ingresso = round(asian_low, 2)
-        sl = round(ingresso + (atr_5m * 1.8), 2)
-        tp = round(ingresso - ((sl - ingresso) * rr_ratio), 2)
-        barriera_ko = round(sl + (atr_5m * 1.2), 2)
-        win_rate = prob_short_ia
-    else:
-        direzione_temp = "NESSUNA (Setup non confermato)"
-
-# FILTRO SMART IA
-if direzione_temp != "NESSUNA (Setup non confermato)":
-    if win_rate >= soglia_minima_ia:
-        direzione = direzione_temp
-    else:
-        direzione = "SCARTATO DALL'IA"
-        motivo_scarto = f"L'IA ha calcolato una probabilità del {win_rate:.1f}%, inferiore al tuo minimo richiesto del {soglia_minima_ia}%."
-
-# Time to Target
-if atr_5m > 0 and ingresso > 0:
-    tempo_trigger = int(abs(ultimo_prezzo - ingresso) / atr_5m) * 5
-    tempo_tp = int(abs(ingresso - tp) / atr_5m) * 5
-else:
-    tempo_trigger, tempo_tp = 0, 0
+# Scenario SHORT (basato su Breakout Supporto o resistenza MA40)
+ing_short = round(min(asian_low, ma40_5m), 2)
+sl_short = round(ing_short + (atr_5m * 1.5), 2)
+tp_short = round(ing_short - ((sl_short - ing_short) * rr_ratio), 2)
+ko_short = round(sl_short + (atr_5m * 1.0), 2)
+t_trig_short = int(abs(ultimo_prezzo - ing_short) / max(atr_5m, 0.01)) * 5
+t_tp_short = int(abs(ing_short - tp_short) / max(atr_5m, 0.01)) * 5
 
 # ==========================================
-# 5. DASHBOARD UI
+# 5. DASHBOARD UI (DOPPIA COLONNA)
 # ==========================================
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Prezzo WTI Sincronizzato", f"{ultimo_prezzo:.2f}", 
-          delta=f"Offset Yahoo: {offset_prezzo:+.2f}" if offset_prezzo != 0 else "Perfettamente Allineato", delta_color="off")
-c2.metric("MA 40 Sincronizzata", f"{ma40_5m:.2f}")
+c1.metric("Prezzo WTI Sincronizzato", f"{ultimo_prezzo:.2f}")
+c2.metric("MA 40", f"{ma40_5m:.2f}")
 c3.metric("RSI 20", f"{rsi20_5m:.2f}")
-c4.metric("Volatilità (ATR 5m)", f"{atr_5m:.2f}")
+c4.metric("Volatilità (ATR)", f"{atr_5m:.2f}")
 
 st.markdown("---")
+st.markdown("### 🎯 Scenari Operativi Predittivi in Tempo Reale")
+st.info("⏰ **Validità Analisi:** Questa proiezione è ottimizzata per la fase di mercato attuale. Si consiglia di ripetere l'analisi o cliccare 'Aggiorna' ogni **15-30 minuti** per ricalcolare i livelli sulla base della nuova volatilità.")
 
-if direzione.startswith("LONG") or direzione.startswith("SHORT"):
-    st.success(f"✅ **MIGLIOR SOLUZIONE PREDITTIVA:** {direzione}")
-    
-    st.markdown(f"### 📊 Probabilità di Successo (IA Random Forest): **{win_rate:.1f}%**")
-    st.progress(int(win_rate))
-    
-    st.markdown("### 📋 Parametri Operativi Ottimizzati")
-    o1, o2, o3, o4 = st.columns(4)
-    o1.metric("Ingresso (Trigger)", f"{ingresso:.2f}")
-    o2.metric("Take Profit", f"{tp:.2f}")
-    o3.metric("Stop Loss", f"{sl:.2f}")
-    o4.metric("Barriera Knockout Fineco", f"{barriera_ko:.2f}")
-    
-    st.info(f"⏱️ **Previsione Tempistiche:** Arrivo al trigger stimato in **{tempo_trigger} min**. Arrivo a TP stimato in **{tempo_tp} min**.")
+col_long, col_short = st.columns(2)
 
-elif direzione == "SCARTATO DALL'IA":
-    st.error(f"🛑 **TRADE BLOCCATO PER BASSA PROBABILITÀ**")
-    st.markdown(f"Setup tecnico rilevato ({direzione_temp}), ma **{motivo_scarto}** Operazione cancellata per proteggere il capitale.")
-    st.progress(int(win_rate))
+# --- COLONNA LONG ---
+with col_long:
+    st.markdown("#### 📈 SCENARIO LONG (Rialzista)")
+    st.metric("Win Rate IA (Probabilità)", f"{prob_long_ia:.1f}%")
+    st.progress(int(prob_long_ia))
+    
+    st.markdown(f"""
+    * **Trigger Ingresso:** `{ing_long:.2f}`
+    * **Tempo al Trigger:** ~`{t_trig_long} min`
+    * **Take Profit (TP):** `{tp_long:.2f}`
+    * **Tempo al TP:** ~`{t_tp_long} min`
+    * **Stop Loss (SL):** `{sl_long:.2f}`
+    * **Barriera Knockout:** `{ko_long:.2f}`
+    """)
 
-else:
-    st.warning("⏳ Nessun ingresso tecnico rilevato al momento. Mercato in attesa sui supporti/resistenze.")
+# --- COLONNA SHORT ---
+with col_short:
+    st.markdown("#### 📉 SCENARIO SHORT (Ribassista)")
+    st.metric("Win Rate IA (Probabilità)", f"{prob_short_ia:.1f}%")
+    st.progress(int(prob_short_ia))
+    
+    st.markdown(f"""
+    * **Trigger Ingresso:** `{ing_short:.2f}`
+    * **Tempo al Trigger:** ~`{t_trig_short} min`
+    * **Take Profit (TP):** `{tp_short:.2f}`
+    * **Tempo al TP:** ~`{t_tp_short} min`
+    * **Stop Loss (SL):** `{sl_short:.2f}`
+    * **Barriera Knockout:** `{ko_short:.2f}`
+    """)
