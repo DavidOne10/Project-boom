@@ -13,7 +13,7 @@ from sklearn.ensemble import RandomForestClassifier
 st.set_page_config(page_title="WTI AI Dual Engine", layout="wide", page_icon="🛢️")
 
 st.markdown("<h1 style='text-align: center; color: #D4AF37;'>🛢️ WTI DUAL SCENARIO AI ENGINE</h1>", unsafe_allow_html=True)
-st.markdown("<h4 style='text-align: center; color: #888;'>Analisi Predittiva Simultanea Long / Short & Sincronizzazione Live</h4>", unsafe_allow_html=True)
+st.markdown("<h4 style='text-align: center; color: #888;'>Motore Blindato - Livelli geometricamente coerenti</h4>", unsafe_allow_html=True)
 st.markdown("---")
 
 # ==========================================
@@ -45,20 +45,26 @@ def calcola_indicatori(df):
     
     df['Dist_MA'] = (df['Close'] - df['MA_40']) / df['MA_40']
     df['Target_UP'] = np.where(df['Close'].shift(-3) > df['Close'], 1, 0)
+    df['Target_DOWN'] = np.where(df['Close'].shift(-3) < df['Close'], 1, 0)
     
     return df.dropna()
 
 def calcola_probabilita_ia(df):
     features = ['RSI_20', 'ATR_14', 'Dist_MA']
     X = df[features].iloc[:-1]
-    y = df['Target_UP'].iloc[:-1]
-    X_live = df[features].iloc[[-1]]
     
-    modello = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-    modello.fit(X, y)
-    
-    prob_long = modello.predict_proba(X_live)[0][1] * 100
-    prob_short = 100 - prob_long
+    # Modello Long
+    y_up = df['Target_UP'].iloc[:-1]
+    modello_up = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+    modello_up.fit(X, y_up)
+    prob_long = modello_up.predict_proba(df[features].iloc[[-1]])[0][1] * 100
+
+    # Modello Short
+    y_down = df['Target_DOWN'].iloc[:-1]
+    modello_down = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+    modello_down.fit(X, y_down)
+    prob_short = modello_down.predict_proba(df[features].iloc[[-1]])[0][1] * 100
+
     return prob_long, prob_short
 
 df_5m, df_1h = scarica_dati()
@@ -83,56 +89,45 @@ if st.sidebar.button("🔄 Aggiorna / Ricarica"):
 
 rr_ratio = st.sidebar.slider("Rischio/Rendimento (R:R):", 1.0, 3.0, 1.6, 0.1)
 
-# Offset e Allineamento
-offset_prezzo = prezzo_reale - prezzo_yahoo
+# Allineamento Prezzo Reale
 ultimo_prezzo = prezzo_reale
-ma40_5m = float(df_5m['MA_40'].iloc[-1]) + offset_prezzo
-rsi20_5m = float(df_5m['RSI_20'].iloc[-1])
 atr_5m = float(df_5m['ATR_14'].iloc[-1])
-
-# Range Asiatico Sincronizzato
-df_5m.index = df_5m.index.tz_convert('Europe/Rome')
-oggi = datetime.now(pytz.timezone('Europe/Rome')).date()
-asian_session = df_5m[(df_5m.index.date == oggi) & (df_5m.index.hour < 10)]
-
-if not asian_session.empty:
-    asian_high = asian_session['High'].max() + offset_prezzo
-    asian_low = asian_session['Low'].min() + offset_prezzo
-else:
-    asian_high = ultimo_prezzo + 0.3
-    asian_low = ultimo_prezzo - 0.3
+if atr_5m == 0:
+    atr_5m = 0.20 # Sicurezza contro divisioni a zero
 
 # ==========================================
-# 4. CALCOLO DOPPIO SCENARIO (LONG & SHORT)
+# 4. CALCOLO GEOMETRICO BLINDATO (LONG & SHORT)
 # ==========================================
-# Scenario LONG (basato su Breakout Resistenza o supporto MA40)
-ing_long = round(max(asian_high, ma40_5m), 2)
-sl_long = round(ing_long - (atr_5m * 1.5), 2)
-tp_long = round(ing_long + ((ing_long - sl_long) * rr_ratio), 2)
-ko_long = round(sl_long - (atr_5m * 1.0), 2)
-t_trig_long = int(abs(ultimo_prezzo - ing_long) / max(atr_5m, 0.01)) * 5
-t_tp_long = int(abs(ing_long - tp_long) / max(atr_5m, 0.01)) * 5
+# SCENARIO LONG: Tutto deve essere SOTTO il prezzo attuale
+ing_long = round(ultimo_prezzo - (atr_5m * 0.5), 2)  # Pullback leggero sotto il prezzo
+sl_long = round(ing_long - (atr_5m * 1.5), 2)         # Sotto l'ingresso
+tp_long = round(ing_long + ((ing_long - sl_long) * rr_ratio), 2) # Sopra l'ingresso
+ko_long = round(sl_long - (atr_5m * 1.0), 2)         # Sotto lo Stop Loss
 
-# Scenario SHORT (basato su Breakout Supporto o resistenza MA40)
-ing_short = round(min(asian_low, ma40_5m), 2)
-sl_short = round(ing_short + (atr_5m * 1.5), 2)
-tp_short = round(ing_short - ((sl_short - ing_short) * rr_ratio), 2)
-ko_short = round(sl_short + (atr_5m * 1.0), 2)
-t_trig_short = int(abs(ultimo_prezzo - ing_short) / max(atr_5m, 0.01)) * 5
-t_tp_short = int(abs(ing_short - tp_short) / max(atr_5m, 0.01)) * 5
+t_trig_long = int(abs(ultimo_prezzo - ing_long) / atr_5m) * 5
+t_tp_long = int(abs(ing_long - tp_long) / atr_5m) * 5
+
+# SCENARIO SHORT: Tutto deve essere SOPRA il prezzo attuale
+ing_short = round(ultimo_prezzo + (atr_5m * 0.5), 2) # Pullback leggero sopra il prezzo
+sl_short = round(ing_short + (atr_5m * 1.5), 2)        # Sopra l'ingresso
+tp_short = round(ing_short - ((sl_short - ing_short) * rr_ratio), 2) # Sotto l'ingresso
+ko_short = round(sl_short + (atr_5m * 1.0), 2)        # Sopra lo Stop Loss
+
+t_trig_short = int(abs(ultimo_prezzo - ing_short) / atr_5m) * 5
+t_tp_short = int(abs(ing_short - tp_short) / atr_5m) * 5
 
 # ==========================================
 # 5. DASHBOARD UI (DOPPIA COLONNA)
 # ==========================================
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Prezzo WTI Sincronizzato", f"{ultimo_prezzo:.2f}")
-c2.metric("MA 40", f"{ma40_5m:.2f}")
-c3.metric("RSI 20", f"{rsi20_5m:.2f}")
+c2.metric("MA 40", f"{float(df_5m['MA_40'].iloc[-1]):.2f}")
+c3.metric("RSI 20", f"{float(df_5m['RSI_20'].iloc[-1]):.2f}")
 c4.metric("Volatilità (ATR)", f"{atr_5m:.2f}")
 
 st.markdown("---")
 st.markdown("### 🎯 Scenari Operativi Predittivi in Tempo Reale")
-st.info("⏰ **Validità Analisi:** Questa proiezione è ottimizzata per la fase di mercato attuale. Si consiglia di ripetere l'analisi o cliccare 'Aggiorna' ogni **15-30 minuti** per ricalcolare i livelli sulla base della nuova volatilità.")
+st.info("⏰ **Validità Analisi:** Analisi geometrica e probabilistica aggiornata al millisecondo. Ripetere il refresh ogni 15-30 minuti in base alla variazione della volatilità.")
 
 col_long, col_short = st.columns(2)
 
@@ -140,28 +135,28 @@ col_long, col_short = st.columns(2)
 with col_long:
     st.markdown("#### 📈 SCENARIO LONG (Rialzista)")
     st.metric("Win Rate IA (Probabilità)", f"{prob_long_ia:.1f}%")
-    st.progress(int(prob_long_ia))
+    st.progress(int(min(max(prob_long_ia, 0), 100)))
     
     st.markdown(f"""
-    * **Trigger Ingresso:** `{ing_long:.2f}`
+    * **Trigger Ingresso:** `{ing_long:.2f}` (Sotto il prezzo)
     * **Tempo al Trigger:** ~`{t_trig_long} min`
-    * **Take Profit (TP):** `{tp_long:.2f}`
+    * **Take Profit (TP):** `{tp_long:.2f}` (Sopra)
     * **Tempo al TP:** ~`{t_tp_long} min`
-    * **Stop Loss (SL):** `{sl_long:.2f}`
-    * **Barriera Knockout:** `{ko_long:.2f}`
+    * **Stop Loss (SL):** `{sl_long:.2f}` (Sotto)
+    * **Barriera Knockout:** `{ko_long:.2f}` (Protezione extra)
     """)
 
 # --- COLONNA SHORT ---
 with col_short:
     st.markdown("#### 📉 SCENARIO SHORT (Ribassista)")
     st.metric("Win Rate IA (Probabilità)", f"{prob_short_ia:.1f}%")
-    st.progress(int(prob_short_ia))
+    st.progress(int(min(max(prob_short_ia, 0), 100)))
     
     st.markdown(f"""
-    * **Trigger Ingresso:** `{ing_short:.2f}`
+    * **Trigger Ingresso:** `{ing_short:.2f}` (Sopra il prezzo)
     * **Tempo al Trigger:** ~`{t_trig_short} min`
-    * **Take Profit (TP):** `{tp_short:.2f}`
+    * **Take Profit (TP):** `{tp_short:.2f}` (Sotto)
     * **Tempo al TP:** ~`{t_tp_short} min`
-    * **Stop Loss (SL):** `{sl_short:.2f}`
-    * **Barriera Knockout:** `{ko_short:.2f}`
+    * **Stop Loss (SL):** `{sl_short:.2f}` (Sopra)
+    * **Barriera Knockout:** `{ko_short:.2f}` (Protezione extra)
     """)
