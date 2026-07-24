@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import pytz
+from sklearn.ensemble import RandomForestClassifier
 
 # ==========================================
 # 1. CONFIGURAZIONE PAGINA
@@ -12,7 +13,7 @@ import pytz
 st.set_page_config(page_title="WTI AI Knockout - 10:00 AM Setup", layout="wide", page_icon="🛢️")
 
 st.markdown("<h1 style='text-align: center; color: #D4AF37;'>🛢️ WTI KNOCKOUT AI ENGINE</h1>", unsafe_allow_html=True)
-st.markdown("<h4 style='text-align: center; color: #888;'>Ottimizzato per Setup ore 10:00 | MA 40 | RSI 20 | Time-to-Target</h4>", unsafe_allow_html=True)
+st.markdown("<h4 style='text-align: center; color: #888;'>Ottimizzato per Setup ore 10:00 | MA 40 | RSI 20 | IA Probability</h4>", unsafe_allow_html=True)
 st.markdown("---")
 
 # ==========================================
@@ -44,7 +45,27 @@ def calcola_indicatori(df):
     ranges = pd.concat([high_low, high_close, low_close], axis=1)
     df['ATR_14'] = np.max(ranges, axis=1).rolling(14).mean()
     
+    # Feature per Machine Learning
+    df['Dist_MA'] = (df['Close'] - df['MA_40']) / df['MA_40']
+    # Target: Il prezzo sale nelle prossime 3 candele (15 min)?
+    df['Target_UP'] = np.where(df['Close'].shift(-3) > df['Close'], 1, 0)
+    
     return df.dropna()
+
+@st.cache_data(ttl=300)
+def calcola_probabilita_ia(df):
+    # Alleniamo il modello Random Forest sui dati storici a 5 min
+    features = ['RSI_20', 'ATR_14', 'Dist_MA']
+    X = df[features].iloc[:-1]
+    y = df['Target_UP'].iloc[:-1]
+    X_live = df[features].iloc[[-1]]
+    
+    modello = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+    modello.fit(X, y)
+    
+    prob_long = modello.predict_proba(X_live)[0][1] * 100
+    prob_short = 100 - prob_long
+    return prob_long, prob_short
 
 df_5m, df_1h = scarica_dati()
 
@@ -54,6 +75,8 @@ if df_5m.empty or df_1h.empty:
 
 df_5m = calcola_indicatori(df_5m)
 df_1h = calcola_indicatori(df_1h)
+
+prob_long_ia, prob_short_ia = calcola_probabilita_ia(df_5m)
 
 # ==========================================
 # 3. FILTRO ORARIO: LA SESSIONE ASIATICA
@@ -85,7 +108,7 @@ st.sidebar.markdown("### Impostazioni IA e Rischio")
 rr_ratio = st.sidebar.slider("Rapporto Rischio/Rendimento (R:R):", 1.0, 3.0, 1.6, 0.1)
 
 direzione = "ATTESA"
-ingresso, sl, tp, barriera_ko = 0.0, 0.0, 0.0, 0.0
+ingresso, sl, tp, barriera_ko, win_rate = 0.0, 0.0, 0.0, 0.0, 0.0
 
 if trend_orario_bullish and rsi20_5m < 45 and ultimo_prezzo >= (ma40_5m - 0.05):
     direzione = "LONG (Pullback Dinamico MA40)"
@@ -93,13 +116,15 @@ if trend_orario_bullish and rsi20_5m < 45 and ultimo_prezzo >= (ma40_5m - 0.05):
     sl = round(ingresso - (atr_5m * 1.5), 2)
     tp = round(ingresso + ((ingresso - sl) * rr_ratio), 2)
     barriera_ko = round(sl - (atr_5m * 1.0), 2)
+    win_rate = prob_long_ia
 
 elif not trend_orario_bullish and rsi20_5m > 55 and ultimo_prezzo <= (ma40_5m + 0.05):
     direzione = "SHORT (Pullback Dinamico MA40)"
     ingresso = round(ma40_5m, 2)
     sl = round(ingresso + (atr_5m * 1.5), 2)
-    tp = round(resistenza - ((sl - ingresso) * rr_ratio), 2) if 'resistenza' in locals() else round(ingresso - ((sl - ingresso) * rr_ratio), 2)
+    tp = round(ingresso - ((sl - ingresso) * rr_ratio), 2)
     barriera_ko = round(sl + (atr_5m * 1.0), 2)
+    win_rate = prob_short_ia
     
 else:
     if ultimo_prezzo > asian_high:
@@ -108,12 +133,14 @@ else:
         sl = round(ingresso - (atr_5m * 1.8), 2)
         tp = round(ingresso + ((ingresso - sl) * rr_ratio), 2)
         barriera_ko = round(sl - (atr_5m * 1.2), 2)
+        win_rate = prob_long_ia
     elif ultimo_prezzo < asian_low:
         direzione = "SHORT (Breakout Supporto Statico Asiatico)"
         ingresso = round(asian_low, 2)
         sl = round(ingresso + (atr_5m * 1.8), 2)
         tp = round(ingresso - ((sl - ingresso) * rr_ratio), 2)
         barriera_ko = round(sl + (atr_5m * 1.2), 2)
+        win_rate = prob_short_ia
 
 velocita_tick_5m = atr_5m  
 distanza_tp = abs(ingresso - tp)
@@ -143,6 +170,9 @@ st.markdown("---")
 if direzione != "ATTESA":
     st.success(f"CONFIGURAZIONE RILEVATA: {direzione}")
     
+    st.markdown(f"### 📊 Probabilità di Successo (IA Random Forest): **{win_rate:.1f}%**")
+    st.progress(int(win_rate))
+    
     st.markdown("### Parametri Ordine (Knockout Fineco)")
     o1, o2, o3, o4 = st.columns(4)
     o1.metric("Ingresso (Trigger)", f"{ingresso:.2f}")
@@ -155,3 +185,4 @@ if direzione != "ATTESA":
             f"- Tempo Stimato al Target: Dall'ingresso, la proiezione per raggiungere il TP è di {tempo_tp} minuti.")
 else:
     st.warning("Il mercato è in fase neutrale. Nessun setup rilevato in base alla tua strategia.")
+    st.markdown(f"*(L'IA assegna attualmente una probabilità Long del {prob_long_ia:.1f}% e Short del {prob_short_ia:.1f}%, ma manca il trigger d'ingresso).*")
