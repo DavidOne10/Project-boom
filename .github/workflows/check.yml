@@ -2,24 +2,25 @@ name: WTI Quant Check
 
 on:
   schedule:
-    - cron: '*/15 * * * *' # Esegue il controllo ogni 15 minuti
-  workflow_dispatch: # Permette l'avvio manuale dal pannello Actions di GitHub
+    - cron: '*/15 * * * *'  # Esegue il controllo ogni 15 minuti
+  workflow_dispatch:        # Permette l'avvio manuale dal pannello Actions di GitHub
 
 jobs:
   run-analysis:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       - name: Install dependencies
         run: |
-          pip install requests pandas numpy yfinance
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       - name: Run trading check
         env:
