@@ -3,25 +3,42 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import requests
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.preprocessing import StandardScaler
 
 # ==========================================
-# 1. CONFIGURAZIONE PAGINA
+# 1. CONFIGURAZIONE TELEGRAM & PAGINA
 # ==========================================
-st.set_page_config(page_title="WTI AI - Knockout & Pullback Engine", layout="wide", page_icon="🛢️")
-st.markdown("<h1 style='text-align: center; color: #D4AF37;'>🛢️ WTI KNOCKOUT & PULLBACK ENGINE</h1>", unsafe_allow_html=True)
-st.markdown("<h4 style='text-align: center; color: #888;'>Ordini Limit (10:00 / 14:30) per Certificati Knockout</h4>", unsafe_allow_html=True)
+TELEGRAM_TOKEN = "INSERISCI_QUI_IL_TUO_TOKEN"
+TELEGRAM_CHAT_ID = "INSERISCI_QUI_IL_TUO_CHAT_ID"
+
+def invia_notifica_telegram(messaggio):
+    if TELEGRAM_TOKEN == "INSERISCI_QUI_IL_TUO_TOKEN":
+        return  # Non invia se non configurato
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": messaggio,
+        "parse_mode": "Markdown"
+    }
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except Exception:
+        pass
+
+st.set_page_config(page_title="WTI AI - Knockout & Telegram Engine", layout="wide", page_icon="🛢️")
+st.markdown("<h1 style='text-align: center; color: #D4AF37;'>🛢️ WTI KNOCKOUT & TELEGRAM BOT ENGINE</h1>", unsafe_allow_html=True)
+st.markdown("<h4 style='text-align: center; color: #888;'>Analisi Storica KNN, Pullback e Notifiche Automatiche</h4>", unsafe_allow_html=True)
 st.markdown("---")
 
 # ==========================================
 # 2. MOTORE DI CALCOLO STORICO & PREZZO LIVE
 # ==========================================
-@st.cache_data(ttl=60) # Aggiorna il prezzo live ogni 60 secondi se ricarichi
+@st.cache_data(ttl=60)
 def ottieni_prezzo_live():
     try:
         t = yf.Ticker("CL=F")
-        # Tenta di prendere il prezzo dall'attributo fast_info o dalla history giornaliera
         price = t.fast_info.get('last_price', None)
         if price is None:
             hist = t.history(period="1d")
@@ -70,7 +87,7 @@ def carica_e_processa_dati():
 df = carica_e_processa_dati()
 
 if df.empty:
-    st.error("⚠️ **Yahoo Finance ha bloccato temporaneamente la richiesta o i dati non sono disponibili.** Riprova tra qualche minuto o inserisci il prezzo manualmente nel pannello a sinistra.")
+    st.error("⚠️ **Yahoo Finance ha bloccato temporaneamente la richiesta.** Inserisci il prezzo manualmente nel pannello a sinistra.")
     st.stop()
 
 def calcola_winrate_storico(df):
@@ -126,8 +143,8 @@ tp_long = round(resistenza_macro, 2)
 rr_calcolato_long = round((tp_long - ing_long_limit) / scarto_barriera, 2)
 
 # ==========================================
-# 5. DASHBOARD UI
-# ==========================================
+# 5. DASHBOARD UI & INVIO TELEGRAM AUTOMATICO
+# =================5=========================
 c1, c2, c3 = st.columns(3)
 c1.metric("Prezzo Live", f"{prezzo_reale:.2f}")
 c2.metric("Rischio Massimo (Barriera)", f"{scarto_barriera:.2f} pt")
@@ -148,6 +165,11 @@ with col1:
         * 🎯 **Take Profit (Resistenza 5H):** `{tp_long:.2f}`
         * 🛡️ **Cerca Knockout con Barriera a:** `{barriera_long:.2f}` o inferiore
         """)
+        
+        if st.button("🚀 Invia Segnale LONG su Telegram"):
+            msg = f"📈 *SEGNALE WTI LONG (Approvato)*\nWin Rate: {win_long:.1f}%\nBuy Limit: {ing_long_limit}\nTP: {tp_long}\nBarriera: {barriera_long}"
+            invia_notifica_telegram(msg)
+            st.success("Notifiche Telegram inviate!")
     else:
         st.error(f"⛔ TRADE SCARTATO - R:R Sfavorevole (1:{rr_calcolato_long})")
 
@@ -163,5 +185,10 @@ with col2:
         * 🎯 **Take Profit (Supporto 5H):** `{tp_short:.2f}`
         * 🛡️ **Cerca Knockout con Barriera a:** `{barriera_short:.2f}` o superiore
         """)
+        
+        if st.button("🚀 Invia Segnale SHORT su Telegram"):
+            msg = f"📉 *SEGNALE WTI SHORT (Approvato)*\nWin Rate: {win_short:.1f}%\nSell Limit: {ing_short_limit}\nTP: {tp_short}\nBarriera: {barriera_short}"
+            invia_notifica_telegram(msg)
+            st.success("Notifiche Telegram inviate!")
     else:
         st.error(f"⛔ TRADE SCARTATO - R:R Sfavorevole (1:{rr_calcolato_short})")
