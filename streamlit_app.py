@@ -15,39 +15,63 @@ st.markdown("<h4 style='text-align: center; color: #888;'>Ordini Limit (10:00 / 
 st.markdown("---")
 
 # ==========================================
-# 2. MOTORE DI CALCOLO STORICO (KNN)
+# 2. MOTORE DI CALCOLO STORICO & PREZZO LIVE
 # ==========================================
-@st.cache_data
+@st.cache_data(ttl=60) # Aggiorna il prezzo live ogni 60 secondi se ricarichi
+def ottieni_prezzo_live():
+    try:
+        t = yf.Ticker("CL=F")
+        # Tenta di prendere il prezzo dall'attributo fast_info o dalla history giornaliera
+        price = t.fast_info.get('last_price', None)
+        if price is None:
+            hist = t.history(period="1d")
+            if not hist.empty:
+                price = float(hist['Close'].iloc[-1])
+        return float(price) if price else 75.0
+    except Exception:
+        return 75.0
+
+@st.cache_data(ttl=3600)
 def carica_e_processa_dati():
-    df = yf.download("CL=F", period="1y", interval="1h", auto_adjust=True, progress=False)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    if df.empty: return pd.DataFrame()
+    try:
+        df = yf.download("CL=F", period="6mo", interval="1h", auto_adjust=True, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if df.empty or 'Close' not in df.columns: 
+            return pd.DataFrame()
 
-    df['MA_Macro_5H'] = df['Close'].rolling(window=200).mean()
-    df['Supporto_Macro'] = df['Low'].rolling(window=150).min()
-    df['Resistenza_Macro'] = df['High'].rolling(window=150).max()
+        df['MA_Macro_5H'] = df['Close'].rolling(window=200).mean()
+        df['Supporto_Macro'] = df['Low'].rolling(window=150).min()
+        df['Resistenza_Macro'] = df['High'].rolling(window=150).max()
 
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    df['RSI_20'] = 100 - (100 / (1 + (gain / loss)))
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        df['RSI_20'] = 100 - (100 / (1 + (gain / loss)))
 
-    high_low = df['High'] - df['Low']
-    high_close = np.abs(df['High'] - df['Close'].shift())
-    low_close = np.abs(df['Low'] - df['Close'].shift())
-    df['ATR'] = np.max(pd.concat([high_low, high_close, low_close], axis=1), axis=1).rolling(14).mean()
-    df['ATR_pct'] = (df['ATR'] / df['Close']) * 100
+        high_low = df['High'] - df['Low']
+        high_close = np.abs(df['High'] - df['Close'].shift())
+        low_close = np.abs(df['Low'] - df['Close'].shift())
+        df['ATR'] = np.max(pd.concat([high_low, high_close, low_close], axis=1), axis=1).rolling(14).mean()
+        df['ATR_pct'] = (df['ATR'] / df['Close']) * 100
 
-    df['Dist_MA_Macro_pct'] = ((df['Close'] - df['MA_Macro_5H']) / df['MA_Macro_5H']) * 100
-    df['Dist_Supporto_pct'] = ((df['Close'] - df['Supporto_Macro']) / df['Supporto_Macro']) * 100
-    
-    df['Future_Min'] = df['Low'].shift(-5).rolling(5).min()
-    df['Future_Max'] = df['High'].shift(-5).rolling(5).max()
-    df['Hit_Short'] = np.where(df['Future_Min'] <= (df['Close'] - 1.0), 1, 0)
-    df['Hit_Long'] = np.where(df['Future_Max'] >= (df['Close'] + 1.0), 1, 0)
-    
-    return df.dropna()
+        df['Dist_MA_Macro_pct'] = ((df['Close'] - df['MA_Macro_5H']) / df['MA_Macro_5H']) * 100
+        df['Dist_Supporto_pct'] = ((df['Close'] - df['Supporto_Macro']) / df['Supporto_Macro']) * 100
+        
+        df['Future_Min'] = df['Low'].shift(-5).rolling(5).min()
+        df['Future_Max'] = df['High'].shift(-5).rolling(5).max()
+        df['Hit_Short'] = np.where(df['Future_Min'] <= (df['Close'] - 1.0), 1, 0)
+        df['Hit_Long'] = np.where(df['Future_Max'] >= (df['Close'] + 1.0), 1, 0)
+        
+        return df.dropna()
+    except Exception as e:
+        return pd.DataFrame()
+
+df = carica_e_processa_dati()
+
+if df.empty:
+    st.error("⚠️ **Yahoo Finance ha bloccato temporaneamente la richiesta o i dati non sono disponibili.** Riprova tra qualche minuto o inserisci il prezzo manualmente nel pannello a sinistra.")
+    st.stop()
 
 def calcola_winrate_storico(df):
     features = ['RSI_20', 'Dist_MA_Macro_pct', 'Dist_Supporto_pct', 'ATR_pct']
@@ -71,15 +95,14 @@ def calcola_winrate_storico(df):
     
     return prob_long, prob_short
 
-df = carica_e_processa_dati()
 win_long, win_short = calcola_winrate_storico(df)
 
 # ==========================================
 # 3. PANNELLO LATERALE: SINCRONIZZAZIONE & RISCHIO
 # ==========================================
 st.sidebar.markdown("### 🔄 Inserimento Dati (10:00 / 14:30)")
-prezzo_yahoo = float(df['Close'].iloc[-1])
-prezzo_reale = st.sidebar.number_input("Prezzo Live Fineco (CFD):", value=prezzo_yahoo, step=0.01)
+prezzo_default_yahoo = ottieni_prezzo_live()
+prezzo_reale = st.sidebar.number_input("Prezzo Live Fineco (CFD):", value=float(prezzo_default_yahoo), step=0.01, format="%.2f")
 
 st.sidebar.markdown("### ⚖️ Money Management Knockout")
 scarto_barriera = st.sidebar.slider("Distanza Barriera Knockout (Punti):", 0.40, 1.00, 0.60, 0.05)
@@ -92,14 +115,12 @@ resistenza_macro = float(df['Resistenza_Macro'].iloc[-1])
 # ==========================================
 # 4. CALCOLO LIVELLI LIMIT E KNOCKOUT
 # ==========================================
-# SHORT: Buy Limit per salire a fare il pullback, Barriera Knockout sopra
-ing_short_limit = round(prezzo_reale + (atr_attuale * 0.4), 2)  # Sell Limit (prezzo più alto per entrare short)
+ing_short_limit = round(prezzo_reale + (atr_attuale * 0.4), 2)  
 barriera_short = round(ing_short_limit + scarto_barriera, 2)
 tp_short = round(supporto_macro, 2)
 rr_calcolato_short = round((ing_short_limit - tp_short) / scarto_barriera, 2)
 
-# LONG: Buy Limit (prezzo più basso per entrare long), Barriera Knockout sotto
-ing_long_limit = round(prezzo_reale - (atr_attuale * 0.4), 2)  # Buy Limit
+ing_long_limit = round(prezzo_reale - (atr_attuale * 0.4), 2)  
 barriera_long = round(ing_long_limit - scarto_barriera, 2)
 tp_long = round(resistenza_macro, 2)
 rr_calcolato_long = round((tp_long - ing_long_limit) / scarto_barriera, 2)
