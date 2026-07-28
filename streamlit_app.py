@@ -3,160 +3,144 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
-import pytz
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.preprocessing import StandardScaler
 
 # ==========================================
 # 1. CONFIGURAZIONE PAGINA
 # ==========================================
-st.set_page_config(page_title="WTI AI Dual Engine", layout="wide", page_icon="🛢️")
-
-st.markdown("<h1 style='text-align: center; color: #D4AF37;'>🛢️ WTI DUAL SCENARIO AI ENGINE</h1>", unsafe_allow_html=True)
-st.markdown("<h4 style='text-align: center; color: #888;'>Motore Blindato - Livelli geometricamente coerenti</h4>", unsafe_allow_html=True)
+st.set_page_config(page_title="WTI AI - Knockout & Pullback Engine", layout="wide", page_icon="🛢️")
+st.markdown("<h1 style='text-align: center; color: #D4AF37;'>🛢️ WTI KNOCKOUT & PULLBACK ENGINE</h1>", unsafe_allow_html=True)
+st.markdown("<h4 style='text-align: center; color: #888;'>Ordini Limit (10:00 / 14:30) per Certificati Knockout</h4>", unsafe_allow_html=True)
 st.markdown("---")
 
 # ==========================================
-# 2. ACQUISIZIONE DATI & MACHINE LEARNING
+# 2. MOTORE DI CALCOLO STORICO (KNN)
 # ==========================================
-def scarica_dati():
-    df_5m = yf.download("CL=F", period="5d", interval="5m", auto_adjust=True, progress=False)
-    df_1h = yf.download("CL=F", period="1mo", interval="1h", auto_adjust=True, progress=False)
-    
-    if isinstance(df_5m.columns, pd.MultiIndex):
-        df_5m.columns = df_5m.columns.get_level_values(0)
-        df_1h.columns = df_1h.columns.get_level_values(0)
-        
-    return df_5m, df_1h
+@st.cache_data
+def carica_e_processa_dati():
+    df = yf.download("CL=F", period="1y", interval="1h", auto_adjust=True, progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    if df.empty: return pd.DataFrame()
 
-def calcola_indicatori(df):
-    df['MA_40'] = df['Close'].rolling(window=40).mean()
+    df['MA_Macro_5H'] = df['Close'].rolling(window=200).mean()
+    df['Supporto_Macro'] = df['Low'].rolling(window=150).min()
+    df['Resistenza_Macro'] = df['High'].rolling(window=150).max()
+
     delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=20).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=20).mean()
-    rs = gain / loss
-    df['RSI_20'] = 100 - (100 / (1 + rs))
-    
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    df['RSI_20'] = 100 - (100 / (1 + (gain / loss)))
+
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    df['ATR_14'] = np.max(ranges, axis=1).rolling(14).mean()
+    df['ATR'] = np.max(pd.concat([high_low, high_close, low_close], axis=1), axis=1).rolling(14).mean()
+    df['ATR_pct'] = (df['ATR'] / df['Close']) * 100
+
+    df['Dist_MA_Macro_pct'] = ((df['Close'] - df['MA_Macro_5H']) / df['MA_Macro_5H']) * 100
+    df['Dist_Supporto_pct'] = ((df['Close'] - df['Supporto_Macro']) / df['Supporto_Macro']) * 100
     
-    df['Dist_MA'] = (df['Close'] - df['MA_40']) / df['MA_40']
-    df['Target_UP'] = np.where(df['Close'].shift(-3) > df['Close'], 1, 0)
-    df['Target_DOWN'] = np.where(df['Close'].shift(-3) < df['Close'], 1, 0)
+    df['Future_Min'] = df['Low'].shift(-5).rolling(5).min()
+    df['Future_Max'] = df['High'].shift(-5).rolling(5).max()
+    df['Hit_Short'] = np.where(df['Future_Min'] <= (df['Close'] - 1.0), 1, 0)
+    df['Hit_Long'] = np.where(df['Future_Max'] >= (df['Close'] + 1.0), 1, 0)
     
     return df.dropna()
 
-def calcola_probabilita_ia(df):
-    features = ['RSI_20', 'ATR_14', 'Dist_MA']
-    X = df[features].iloc[:-1]
+def calcola_winrate_storico(df):
+    features = ['RSI_20', 'Dist_MA_Macro_pct', 'Dist_Supporto_pct', 'ATR_pct']
+    X = df[features].iloc[:-5]
+    y_short = df['Hit_Short'].iloc[:-5]
+    y_long = df['Hit_Long'].iloc[:-5]
     
-    # Modello Long
-    y_up = df['Target_UP'].iloc[:-1]
-    modello_up = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-    modello_up.fit(X, y_up)
-    prob_long = modello_up.predict_proba(df[features].iloc[[-1]])[0][1] * 100
-
-    # Modello Short
-    y_down = df['Target_DOWN'].iloc[:-1]
-    modello_down = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-    modello_down.fit(X, y_down)
-    prob_short = modello_down.predict_proba(df[features].iloc[[-1]])[0][1] * 100
-
+    situazione_attuale = df[features].iloc[[-1]]
+    
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    attuale_scaled = scaler.transform(situazione_attuale)
+    
+    knn_short = KNeighborsClassifier(n_neighbors=50, weights='distance')
+    knn_short.fit(X_scaled, y_short)
+    prob_short = knn_short.predict_proba(attuale_scaled)[0][1] * 100
+    
+    knn_long = KNeighborsClassifier(n_neighbors=50, weights='distance')
+    knn_long.fit(X_scaled, y_long)
+    prob_long = knn_long.predict_proba(attuale_scaled)[0][1] * 100
+    
     return prob_long, prob_short
 
-df_5m, df_1h = scarica_dati()
-
-if df_5m.empty or df_1h.empty:
-    st.error("Errore di connessione dati.")
-    st.stop()
-
-df_5m = calcola_indicatori(df_5m)
-df_1h = calcola_indicatori(df_1h)
-prob_long_ia, prob_short_ia = calcola_probabilita_ia(df_5m)
+df = carica_e_processa_dati()
+win_long, win_short = calcola_winrate_storico(df)
 
 # ==========================================
-# 3. PANNELLO LATERALE: SINCRONIZZAZIONE
+# 3. PANNELLO LATERALE: SINCRONIZZAZIONE & RISCHIO
 # ==========================================
-st.sidebar.markdown("### 🔄 Sincronizzazione Prezzo")
-prezzo_yahoo = float(df_5m['Close'].iloc[-1])
+st.sidebar.markdown("### 🔄 Inserimento Dati (10:00 / 14:30)")
+prezzo_yahoo = float(df['Close'].iloc[-1])
 prezzo_reale = st.sidebar.number_input("Prezzo Live Fineco (CFD):", value=prezzo_yahoo, step=0.01)
 
-if st.sidebar.button("🔄 Aggiorna / Ricarica"):
-    st.rerun()
+st.sidebar.markdown("### ⚖️ Money Management Knockout")
+scarto_barriera = st.sidebar.slider("Distanza Barriera Knockout (Punti):", 0.40, 1.00, 0.60, 0.05)
+rr_minimo = st.sidebar.number_input("R:R Minimo Accettabile:", value=1.5, step=0.1)
 
-rr_ratio = st.sidebar.slider("Rischio/Rendimento (R:R):", 1.0, 3.0, 1.6, 0.1)
-
-# Allineamento Prezzo Reale
-ultimo_prezzo = prezzo_reale
-atr_5m = float(df_5m['ATR_14'].iloc[-1])
-if atr_5m == 0:
-    atr_5m = 0.20 # Sicurezza contro divisioni a zero
+atr_attuale = float(df['ATR'].iloc[-1])
+supporto_macro = float(df['Supporto_Macro'].iloc[-1])
+resistenza_macro = float(df['Resistenza_Macro'].iloc[-1])
 
 # ==========================================
-# 4. CALCOLO GEOMETRICO BLINDATO (LONG & SHORT)
+# 4. CALCOLO LIVELLI LIMIT E KNOCKOUT
 # ==========================================
-# SCENARIO LONG: Tutto deve essere SOTTO il prezzo attuale
-ing_long = round(ultimo_prezzo - (atr_5m * 0.5), 2)  # Pullback leggero sotto il prezzo
-sl_long = round(ing_long - (atr_5m * 1.5), 2)         # Sotto l'ingresso
-tp_long = round(ing_long + ((ing_long - sl_long) * rr_ratio), 2) # Sopra l'ingresso
-ko_long = round(sl_long - (atr_5m * 1.0), 2)         # Sotto lo Stop Loss
+# SHORT: Buy Limit per salire a fare il pullback, Barriera Knockout sopra
+ing_short_limit = round(prezzo_reale + (atr_attuale * 0.4), 2)  # Sell Limit (prezzo più alto per entrare short)
+barriera_short = round(ing_short_limit + scarto_barriera, 2)
+tp_short = round(supporto_macro, 2)
+rr_calcolato_short = round((ing_short_limit - tp_short) / scarto_barriera, 2)
 
-t_trig_long = int(abs(ultimo_prezzo - ing_long) / atr_5m) * 5
-t_tp_long = int(abs(ing_long - tp_long) / atr_5m) * 5
-
-# SCENARIO SHORT: Tutto deve essere SOPRA il prezzo attuale
-ing_short = round(ultimo_prezzo + (atr_5m * 0.5), 2) # Pullback leggero sopra il prezzo
-sl_short = round(ing_short + (atr_5m * 1.5), 2)        # Sopra l'ingresso
-tp_short = round(ing_short - ((sl_short - ing_short) * rr_ratio), 2) # Sotto l'ingresso
-ko_short = round(sl_short + (atr_5m * 1.0), 2)        # Sopra lo Stop Loss
-
-t_trig_short = int(abs(ultimo_prezzo - ing_short) / atr_5m) * 5
-t_tp_short = int(abs(ing_short - tp_short) / atr_5m) * 5
+# LONG: Buy Limit (prezzo più basso per entrare long), Barriera Knockout sotto
+ing_long_limit = round(prezzo_reale - (atr_attuale * 0.4), 2)  # Buy Limit
+barriera_long = round(ing_long_limit - scarto_barriera, 2)
+tp_long = round(resistenza_macro, 2)
+rr_calcolato_long = round((tp_long - ing_long_limit) / scarto_barriera, 2)
 
 # ==========================================
-# 5. DASHBOARD UI (DOPPIA COLONNA)
+# 5. DASHBOARD UI
 # ==========================================
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Prezzo WTI Sincronizzato", f"{ultimo_prezzo:.2f}")
-c2.metric("MA 40", f"{float(df_5m['MA_40'].iloc[-1]):.2f}")
-c3.metric("RSI 20", f"{float(df_5m['RSI_20'].iloc[-1]):.2f}")
-c4.metric("Volatilità (ATR)", f"{atr_5m:.2f}")
+c1, c2, c3 = st.columns(3)
+c1.metric("Prezzo Live", f"{prezzo_reale:.2f}")
+c2.metric("Rischio Massimo (Barriera)", f"{scarto_barriera:.2f} pt")
+c3.metric("ATR Volatilità", f"{atr_attuale:.2f}")
 
 st.markdown("---")
-st.markdown("### 🎯 Scenari Operativi Predittivi in Tempo Reale")
-st.info("⏰ **Validità Analisi:** Analisi geometrica e probabilistica aggiornata al millisecondo. Ripetere il refresh ogni 15-30 minuti in base alla variazione della volatilità.")
+col1, col2 = st.columns(2)
 
-col_long, col_short = st.columns(2)
-
-# --- COLONNA LONG ---
-with col_long:
-    st.markdown("#### 📈 SCENARIO LONG (Rialzista)")
-    st.metric("Win Rate IA (Probabilità)", f"{prob_long_ia:.1f}%")
-    st.progress(int(min(max(prob_long_ia, 0), 100)))
+with col1:
+    st.markdown("#### 📈 SCENARIO LONG (Ordine Buy Limit)")
+    st.metric("Win Rate Statistico", f"{win_long:.1f}%")
+    st.progress(int(win_long))
     
-    st.markdown(f"""
-    * **Trigger Ingresso:** `{ing_long:.2f}` (Sotto il prezzo)
-    * **Tempo al Trigger:** ~`{t_trig_long} min`
-    * **Take Profit (TP):** `{tp_long:.2f}` (Sopra)
-    * **Tempo al TP:** ~`{t_tp_long} min`
-    * **Stop Loss (SL):** `{sl_long:.2f}` (Sotto)
-    * **Barriera Knockout:** `{ko_long:.2f}` (Protezione extra)
-    """)
+    if rr_calcolato_long >= rr_minimo:
+        st.success(f"✅ Money Management Approvato (R:R 1:{rr_calcolato_long})")
+        st.markdown(f"""
+        * 📥 **Ingresso Limit (Buy):** `{ing_long_limit:.2f}`
+        * 🎯 **Take Profit (Resistenza 5H):** `{tp_long:.2f}`
+        * 🛡️ **Cerca Knockout con Barriera a:** `{barriera_long:.2f}` o inferiore
+        """)
+    else:
+        st.error(f"⛔ TRADE SCARTATO - R:R Sfavorevole (1:{rr_calcolato_long})")
 
-# --- COLONNA SHORT ---
-with col_short:
-    st.markdown("#### 📉 SCENARIO SHORT (Ribassista)")
-    st.metric("Win Rate IA (Probabilità)", f"{prob_short_ia:.1f}%")
-    st.progress(int(min(max(prob_short_ia, 0), 100)))
+with col2:
+    st.markdown("#### 📉 SCENARIO SHORT (Ordine Sell Limit)")
+    st.metric("Win Rate Statistico", f"{win_short:.1f}%")
+    st.progress(int(win_short))
     
-    st.markdown(f"""
-    * **Trigger Ingresso:** `{ing_short:.2f}` (Sopra il prezzo)
-    * **Tempo al Trigger:** ~`{t_trig_short} min`
-    * **Take Profit (TP):** `{tp_short:.2f}` (Sotto)
-    * **Tempo al TP:** ~`{t_tp_short} min`
-    * **Stop Loss (SL):** `{sl_short:.2f}` (Sopra)
-    * **Barriera Knockout:** `{ko_short:.2f}` (Protezione extra)
-    """)
+    if rr_calcolato_short >= rr_minimo:
+        st.success(f"✅ Money Management Approvato (R:R 1:{rr_calcolato_short})")
+        st.markdown(f"""
+        * 📥 **Ingresso Limit (Sell):** `{ing_short_limit:.2f}`
+        * 🎯 **Take Profit (Supporto 5H):** `{tp_short:.2f}`
+        * 🛡️ **Cerca Knockout con Barriera a:** `{barriera_short:.2f}` o superiore
+        """)
+    else:
+        st.error(f"⛔ TRADE SCARTATO - R:R Sfavorevole (1:{rr_calcolato_short})")
