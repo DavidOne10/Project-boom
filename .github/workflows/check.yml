@@ -2,9 +2,10 @@ name: WTI Automated Checker
 
 on:
   schedule:
-    # Orario in formato UTC (es. 08:00 e 12:30 UTC corrispondono rispettivamente alle 10:00 e 14:30 in Italia con ora legale)
-    - cron: '0 8,30 12 * * 1-5'
-  workflow_dispatch: # Ti permette di testarlo a mano con un click dalla tab "Actions" su GitHub
+    # Esegue dal lunedì al venerdì alle 08:00 UTC (10:00 in Italia) e alle 12:30 UTC (14:30 in Italia)
+    - cron: '0 8 * * 1-5'
+    - cron: '30 12 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   run-checker:
