@@ -1,184 +1,204 @@
-# -*- coding: utf-8 -*-
-import os
+-- coding: utf-8 --
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import requests
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.preprocessing import StandardScaler
+from datetime import datetime
+import pytz
+from sklearn.ensemble import RandomForestClassifier
 
-# Configurazione della pagina Streamlit
-st.set_page_config(page_title="WTI Predictive Bot", layout="wide", page_icon="🛢️")
+==========================================
+1. CONFIGURAZIONE PAGINA
+==========================================
+st.set_page_config(page_title="WTI AI Knockout", layout="wide", page_icon="🛢️")
 
-# Recupero credenziali Telegram (compatibile con Streamlit Secrets o variabili d'ambiente)
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", st.secrets.get("TELEGRAM_TOKEN", ""))
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", st.secrets.get("TELEGRAM_CHAT_ID", ""))
+st.markdown("<h1 style='text-align: center; color: #D4AF37;'>🛢️ WTI KNOCKOUT AI ENGINE</h1>", unsafe_allow_html=True)
+st.markdown("<h4 style='text-align: center; color: #888;'>Filtro IA Predittiva Attivo | Sincronizzazione Live Fineco</h4>", unsafe_allow_html=True)
+st.markdown("---")
 
-# Parametri operativi personalizzabili (CORRETTO)
-SOGLIA_WINRATE = st.sidebar.slider("Soglia Win Rate Predittivo (%)", 40.0, 75.0, 52.0, 0.5)
-SCARTO_BARRIERA = st.sidebar.number_input("Scarto Barriera Stop (USD)", value=0.60, step=0.05)
-RR_MINIMO = st.sidebar.slider("Rapporto R:R Minimo", 1.0, 3.0, 1.5, 0.1)
+==========================================
+2. ACQUISIZIONE DATI (Senza Cache per Real-Time)
+==========================================
+def scarica_dati():
+# Usiamo un try-except per scaricare i dati senza bloccare l'app
+df_5m = yf.download("CL=F", period="5d", interval="5m", auto_adjust=True, progress=False)
+df_1h = yf.download("CL=F", period="1mo", interval="1h", auto_adjust=True, progress=False)
 
-def invia_notifica_telegram(messaggio):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        st.warning("⚠️ Token o Chat ID di Telegram non configurati. Impossibile inviare la notifica.")
-        return False
-        
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": messaggio,
-        "parse_mode": "Markdown"
-    }
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            return True
-        else:
-            st.error(f"❌ Errore Telegram API ({response.status_code}): {response.text}")
-            return False
-    except Exception as e:
-        st.error(f"❌ Eccezione durante l'invio Telegram: {e}")
-        return False
+if isinstance(df_5m.columns, pd.MultiIndex):
+df_5m.columns = df_5m.columns.get_level_values(0)
+df_1h.columns = df_1h.columns.get_level_values(0)
 
-st.title("🛢️ WTI Predictive & Smart Trading Bot")
-st.markdown("Sistema di analisi predittiva basato su **Machine Learning (KNN)** e gestione avanzata del rischio sul petrolio greggio.")
+return df_5m, df_1h
 
-if st.button("🚀 Esegui Analisi e Controlla Segnali", type="primary"):
-    with st.spinner("Scaricamento dati storici e calcolo del motore predittivo in corso..."):
-        try:
-            # 1. Download dei dati storici orari del WTI
-            df = yf.download("CL=F", period="6mo", interval="1h", auto_adjust=True, progress=False)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-                
-            if df.empty or 'Close' not in df.columns:
-                st.error("❌ Errore: Impossibile recuperare i dati da yfinance.")
-                st.stop()
+def calcola_indicatori(df):
+df['MA_40'] = df['Close'].rolling(window=40).mean()
+delta = df['Close'].diff()
+gain = (delta.where(delta > 0, 0)).rolling(window=20).mean()
+loss = (-delta.where(delta < 0, 0)).rolling(window=20).mean()
+rs = gain / loss
+df['RSI_20'] = 100 - (100 / (1 + rs))
 
-            # 2. Analisi Tecnica e Feature Engineering Completo
-            df['MA_Macro_5H'] = df['Close'].rolling(window=200).mean()
-            df['Supporto_Macro'] = df['Low'].rolling(window=150).min()
-            df['Resistenza_Macro'] = df['High'].rolling(window=150).max()
+high_low = df['High'] - df['Low']
+high_close = np.abs(df['High'] - df['Close'].shift())
+low_close = np.abs(df['Low'] - df['Close'].shift())
+ranges = pd.concat([high_low, high_close, low_close], axis=1)
+df['ATR_14'] = np.max(ranges, axis=1).rolling(14).mean()
 
-            # Calcolo RSI a 20 periodi
-            delta = df['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            df['RSI_20'] = 100 - (100 / (1 + (gain / loss)))
+df['Dist_MA'] = (df['Close'] - df['MA_40']) / df['MA_40']
+df['Target_UP'] = np.where(df['Close'].shift(-3) > df['Close'], 1, 0)
 
-            # Calcolo ATR (Average True Range) e ATR percentuale
-            high_low = df['High'] - df['Low']
-            high_close = np.abs(df['High'] - df['Close'].shift())
-            low_close = np.abs(df['Low'] - df['Close'].shift())
-            df['ATR'] = np.max(pd.concat([high_low, high_close, low_close], axis=1), axis=1).rolling(14).mean()
-            df['ATR_pct'] = (df['ATR'] / df['Close']) * 100
+return df.dropna()
 
-            # Distanze percentuali dalle strutture macro
-            df['Dist_MA_Macro_pct'] = ((df['Close'] - df['MA_Macro_5H']) / df['MA_Macro_5H']) * 100
-            df['Dist_Supporto_pct'] = ((df['Close'] - df['Supporto_Macro']) / df['Supporto_Macro']) * 100
-            
-            # 3. Etichettatura Predittiva per il Modello (Target futuri)
-            df['Future_Min'] = df['Low'].shift(-5).rolling(5).min()
-            df['Future_Max'] = df['High'].shift(-5).rolling(5).max()
-            df['Hit_Short'] = np.where(df['Future_Min'] <= (df['Close'] - 1.0), 1, 0)
-            df['Hit_Long'] = np.where(df['Future_Max'] >= (df['Close'] + 1.0), 1, 0)
-            
-            df = df.dropna()
-            if df.empty:
-                st.error("❌ Dataset vuoto dopo la pulizia dei dati NaN.")
-                st.stop()
+def calcola_probabilita_ia(df):
+features = ['RSI_20', 'ATR_14', 'Dist_MA']
+X = df[features].iloc[:-1]
+y = df['Target_UP'].iloc[:-1]
+X_live = df[features].iloc[[-1]]
 
-            # 4. Modulo di Machine Learning (KNN Classifier)
-            features = ['RSI_20', 'Dist_MA_Macro_pct', 'Dist_Supporto_pct', 'ATR_pct']
-            X = df[features].iloc[:-5]
-            y_short = df['Hit_Short'].iloc[:-5]
-            y_long = df['Hit_Long'].iloc[:-5]
-            
-            situazione_attuale = df[features].iloc[[-1]]
-            
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            attuale_scaled = scaler.transform(situazione_attuale)
-            
-            # Addestramento KNN per SHORT
-            knn_short = KNeighborsClassifier(n_neighbors=50, weights='distance')
-            knn_short.fit(X_scaled, y_short)
-            prob_short = knn_short.predict_proba(attuale_scaled)[0][1] * 100
-            
-            # Addestramento KNN per LONG
-            knn_long = KNeighborsClassifier(n_neighbors=50, weights='distance')
-            knn_long.fit(X_scaled, y_long)
-            prob_long = knn_long.predict_proba(attuale_scaled)[0][1] * 100
+modello = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
+modello.fit(X, y)
 
-            # Estrazione valori di mercato attuali
-            prezzo_reale = float(df['Close'].iloc[-1])
-            atr_attuale = float(df['ATR'].iloc[-1])
-            supporto_macro = float(df['Supporto_Macro'].iloc[-1])
-            resistenza_macro = float(df['Resistenza_Macro'].iloc[-1])
-            
-            # --- PRESENTAZIONE RISULTATI A SCHERMO ---
-            st.success("Analisi completata con successo!")
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Prezzo WTI Attuale", f"${prezzo_reale:.2f}")
-            col2.metric("Win Rate Predittivo SHORT", f"{prob_short:.1f}%")
-            col3.metric("Win Rate Predittivo LONG", f"{prob_long:.1f}%")
+prob_long = modello.predict_proba(X_live)[0][1] * 100
+prob_short = 100 - prob_long
+return prob_long, prob_short
 
-            st.divider()
+df_5m, df_1h = scarica_dati()
 
-            # --- VERIFICA E GESTIONE SCENARIO SHORT ---
-            ing_short_limit = round(prezzo_reale + (atr_attuale * 0.4), 2)  
-            barriera_short = round(ing_short_limit + SCARTO_BARRIERA, 2)
-            tp_short = round(supporto_macro, 2)
-            rr_calcolato_short = round((ing_short_limit - tp_short) / SCARTO_BARRIERA, 2)
+if df_5m.empty or df_1h.empty:
+st.error("Errore di connessione dati.")
+st.stop()
 
-            st.subheader("📉 Valutazione Scenario SHORT")
-            st.write(f"- **Sell Limit:** `{ing_short_limit}` | **Take Profit:** `{tp_short}` | **Barriera Stop:** `{barriera_short}`")
-            st.write(f"- **Rapporto R:R:** `1:{rr_calcolato_short}` (Minimo richiesto: `{RR_MINIMO}`)")
+df_5m = calcola_indicatori(df_5m)
+df_1h = calcola_indicatori(df_1h)
+prob_long_ia, prob_short_ia = calcola_probabilita_ia(df_5m)
 
-            if prob_short >= SOGLIA_WINRATE and rr_calcolato_short >= RR_MINIMO:
-                st.markdown("✅ **SEGNALE SHORT VALIDATO DAL MODELLO!**")
-                msg_short = (
-                    f"📉 *SEGNALE WTI SHORT AUTOMATICO*\n"
-                    f"📊 Win Rate: *{prob_short:.1f}%*\n"
-                    f"📥 Sell Limit: `{ing_short_limit}`\n"
-                    f"🎯 Take Profit: `{tp_short}`\n"
-                    f"🛡️ Barriera Stop: `{barriera_short}`\n"
-                    f"⚖️ R:R: `1:{rr_calcolato_short}`"
-                )
-                if invia_notifica_telegram(msg_short):
-                    st.toast("Alert SHORT inviato su Telegram!", icon="🚀")
-            else:
-                st.info("ℹ️ Condizioni non soddisfatte per lo SHORT (Win Rate o R:R inferiori ai paletti impostati).")
+==========================================
+3. PANNELLO LATERALE: SINCRONIZZAZIONE E FILTRI
+==========================================
+st.sidebar.markdown("### 🔄 1. Sincronizza Dati")
+prezzo_yahoo = float(df_5m['Close'].iloc[-1])
+prezzo_reale = st.sidebar.number_input("Prezzo Live Fineco (CFD):", value=prezzo_yahoo, step=0.01,
+help="Se Yahoo è in ritardo o su un altro contratto, scrivi qui il prezzo esatto di Fineco.")
+if st.sidebar.button("Forza Ricalcolo Immediato"):
+st.rerun()
 
-            st.divider()
+st.sidebar.markdown("### ⚙️ 2. Regole Motore IA")
+soglia_minima_ia = st.sidebar.slider("Soglia Minima Win Rate (%):", 50, 80, 55, 1,
+help="L'IA scarterà tutti i trade con probabilità inferiore a questa soglia.")
+rr_ratio = st.sidebar.slider("Rischio/Rendimento (R:R):", 1.0, 3.0, 1.6, 0.1)
 
-            # --- VERIFICA E GESTIONE SCENARIO LONG ---
-            ing_long_limit = round(prezzo_reale - (atr_attuale * 0.4), 2)  
-            barriera_long = round(ing_long_limit - SCARTO_BARRIERA, 2)
-            tp_long = round(resistenza_macro, 2)
-            rr_calcolato_long = round((tp_long - ing_long_limit) / SCARTO_BARRIERA, 2)
+Calcolo differenza di prezzo tra Fineco e Yahoo (Offset)
+offset_prezzo = prezzo_reale - prezzo_yahoo
 
-            st.subheader("🚀 Valutazione Scenario LONG")
-            st.write(f"- **Buy Limit:** `{ing_long_limit}` | **Take Profit:** `{tp_long}` | **Barriera Stop:** `{barriera_long}`")
-            st.write(f"- **Rapporto R:R:** `1:{rr_calcolato_long}` (Minimo richiesto: `{RR_MINIMO}`)")
+Applichiamo l'offset agli indicatori chiave per allinearli al TUO grafico Fineco
+ultimo_prezzo = prezzo_reale
+ma40_5m = float(df_5m['MA_40'].iloc[-1]) + offset_prezzo
+rsi20_5m = float(df_5m['RSI_20'].iloc[-1])
+atr_5m = float(df_5m['ATR_14'].iloc[-1])
 
-            if prob_long >= SOGLIA_WINRATE and rr_calcolato_long >= RR_MINIMO:
-                st.markdown("✅ **SEGNALE LONG VALIDATO DAL MODELLO!**")
-                msg_long = (
-                    f"🚀 *SEGNALE WTI LONG AUTOMATICO*\n"
-                    f"📊 Win Rate: *{prob_long:.1f}%*\n"
-                    f"📥 Buy Limit: `{ing_long_limit}`\n"
-                    f"🎯 Take Profit: `{tp_long}`\n"
-                    f"🛡️ Barriera Stop: `{barriera_long}`\n"
-                    f"⚖️ R:R: `1:{rr_calcolato_long}`"
-                )
-                if invia_notifica_telegram(msg_long):
-                    st.toast("Alert LONG inviato su Telegram!", icon="🚀")
-            else:
-                st.info("ℹ️ Condizioni non soddisfatte per il LONG (Win Rate o R:R inferiori ai paletti impostati).")
+trend_orario_bullish = (float(df_1h['Close'].iloc[-1]) + offset_prezzo) > (float(df_1h['MA_40'].iloc[-1]) + offset_prezzo)
 
-        except Exception as e:
-            st.error(f"❌ Errore critico durante l'esecuzione dell'analisi predittiva: {e}")
+Range Asiatico Sincronizzato
+df_5m.index = df_5m.index.tz_convert('Europe/Rome')
+oggi = datetime.now(pytz.timezone('Europe/Rome')).date()
+asian_session = df_5m[(df_5m.index.date == oggi) & (df_5m.index.hour < 10)]
+
+if not asian_session.empty:
+asian_high = asian_session['High'].max() + offset_prezzo
+asian_low = asian_session['Low'].min() + offset_prezzo
+else:
+asian_high = ultimo_prezzo + 0.3
+asian_low = ultimo_prezzo - 0.3
+
+==========================================
+4. MOTORE LOGICO
+==========================================
+direzione = "ATTESA"
+ingresso, sl, tp, barriera_ko, win_rate = 0.0, 0.0, 0.0, 0.0, 0.0
+motivo_scarto = ""
+
+Valutazione Tecnica
+if trend_orario_bullish and rsi20_5m < 45 and ultimo_prezzo >= (ma40_5m - 0.05):
+direzione_temp = "LONG (Pullback Dinamico MA40)"
+ingresso = round(ma40_5m, 2)
+sl = round(ingresso - (atr_5m * 1.5), 2)
+tp = round(ingresso + ((ingresso - sl) * rr_ratio), 2)
+barriera_ko = round(sl - (atr_5m * 1.0), 2)
+win_rate = prob_long_ia
+
+elif not trend_orario_bullish and rsi20_5m > 55 and ultimo_prezzo <= (ma40_5m + 0.05):
+direzione_temp = "SHORT (Pullback Dinamico MA40)"
+ingresso = round(ma40_5m, 2)
+sl = round(ingresso + (atr_5m * 1.5), 2)
+tp = round(ingresso - ((sl - ingresso) * rr_ratio), 2)
+barriera_ko = round(sl + (atr_5m * 1.0), 2)
+win_rate = prob_short_ia
+
+else:
+if ultimo_prezzo > asian_high:
+direzione_temp = "LONG (Breakout Range)"
+ingresso = round(asian_high, 2)
+sl = round(ingresso - (atr_5m * 1.8), 2)
+tp = round(ingresso + ((ingresso - sl) * rr_ratio), 2)
+barriera_ko = round(sl - (atr_5m * 1.2), 2)
+win_rate = prob_long_ia
+elif ultimo_prezzo < asian_low:
+direzione_temp = "SHORT (Breakout Range)"
+ingresso = round(asian_low, 2)
+sl = round(ingresso + (atr_5m * 1.8), 2)
+tp = round(ingresso - ((sl - ingresso) * rr_ratio), 2)
+barriera_ko = round(sl + (atr_5m * 1.2), 2)
+win_rate = prob_short_ia
+else:
+direzione_temp = "NESSUNA (Setup non confermato)"
+
+FILTRO SMART IA
+if direzione_temp != "NESSUNA (Setup non confermato)":
+if win_rate >= soglia_minima_ia:
+direzione = direzione_temp
+else:
+direzione = "SCARTATO DALL'IA"
+motivo_scarto = f"L'IA ha calcolato una probabilità del {win_rate:.1f}%, inferiore al tuo minimo richiesto del {soglia_minima_ia}%."
+
+Time to Target
+if atr_5m > 0 and ingresso > 0:
+tempo_trigger = int(abs(ultimo_prezzo - ingresso) / atr_5m) * 5
+tempo_tp = int(abs(ingresso - tp) / atr_5m) * 5
+else:
+tempo_trigger, tempo_tp = 0, 0
+
+==========================================
+5. DASHBOARD UI
+==========================================
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Prezzo WTI Sincronizzato", f"{ultimo_prezzo:.2f}",
+delta=f"Offset Yahoo: {offset_prezzo:+.2f}" if offset_prezzo != 0 else "Perfettamente Allineato", delta_color="off")
+c2.metric("MA 40 Sincronizzata", f"{ma40_5m:.2f}")
+c3.metric("RSI 20", f"{rsi20_5m:.2f}")
+c4.metric("Volatilità (ATR 5m)", f"{atr_5m:.2f}")
+
+st.markdown("---")
+
+if direzione.startswith("LONG") or direzione.startswith("SHORT"):
+st.success(f"✅ MIGLIOR SOLUZIONE PREDITTIVA: {direzione}")
+
+st.markdown(f"### 📊 Probabilità di Successo (IA Random Forest): {win_rate:.1f}%")
+st.progress(int(win_rate))
+
+st.markdown("### 📋 Parametri Operativi Ottimizzati")
+o1, o2, o3, o4 = st.columns(4)
+o1.metric("Ingresso (Trigger)", f"{ingresso:.2f}")
+o2.metric("Take Profit", f"{tp:.2f}")
+o3.metric("Stop Loss", f"{sl:.2f}")
+o4.metric("Barriera Knockout Fineco", f"{barriera_ko:.2f}")
+
+st.info(f"⏱️ Previsione Tempistiche: Arrivo al trigger stimato in {tempo_trigger} min. Arrivo a TP stimato in {tempo_tp} min.")
+
+elif direzione == "SCARTATO DALL'IA":
+st.error(f"🛑 TRADE BLOCCATO PER BASSA PROBABILITÀ")
+st.markdown(f"Setup tecnico rilevato ({direzione_temp}), ma {motivo_scarto} Operazione cancellata per proteggere il capitale.")
+st.progress(int(win_rate))
+
+else:
+st.warning("⏳ Nessun ingresso tecnico rilevato al momento. Mercato in attesa sui supporti/resistenze.")
+
