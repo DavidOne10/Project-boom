@@ -15,9 +15,9 @@ st.set_page_config(page_title="WTI Predictive Bot", layout="wide", page_icon="ðŸ
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", st.secrets.get("TELEGRAM_TOKEN", ""))
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", st.secrets.get("TELEGRAM_CHAT_ID", ""))
 
-# Parametri operativi personalizzabili
+# Parametri operativi personalizzabili (CORRETTO)
 SOGLIA_WINRATE = st.sidebar.slider("Soglia Win Rate Predittivo (%)", 40.0, 75.0, 52.0, 0.5)
-SCARTO_BARRIERA = st.sidebar.number_float_input if hasattr(st.sidebar, 'number_float_input') else st.sidebar.number_input("Scarto Barriera Stop (USD)", value=0.60, step=0.05)
+SCARTO_BARRIERA = st.sidebar.number_input("Scarto Barriera Stop (USD)", value=0.60, step=0.05)
 RR_MINIMO = st.sidebar.slider("Rapporto R:R Minimo", 1.0, 3.0, 1.5, 0.1)
 
 def invia_notifica_telegram(messaggio):
