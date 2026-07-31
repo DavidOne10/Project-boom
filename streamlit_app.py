@@ -6,27 +6,25 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
 # --- CONFIGURAZIONE INTERFACCIA ---
-st.set_page_config(page_title="V-Alpha PRO | Daily Coherent Backtest", layout="wide")
+st.set_page_config(page_title="V-Alpha PRO | Walk-Forward OOS", layout="wide")
 
-st.title("🤖 V-Alpha PRO | Daily Coherent Backtest (Anti-IA & Costi Fissi)")
+st.title("🤖 V-Alpha PRO | Walk-Forward Optimization (Out-of-Sample)")
 st.markdown("---")
 
-# --- 1. MOTORE ADDESTRAMENTO RANDOM FOREST (DAILY COERENTE) ---
+# --- 1. FUNZIONE DI ADDESTRAMENTO DINAMICO (WALK-FORWARD) ---
 @st.cache_data(ttl=3600)
-def addestra_modello_ia(ticker):
+def scarica_dati_base(ticker):
     try:
         dati = yf.download(ticker, period="3y", interval="1d", auto_adjust=True, progress=False)
         if isinstance(dati.columns, pd.MultiIndex):
             dati.columns = dati.columns.get_level_values(0)
             
-        if dati.empty or len(dati) < 100:
-            return None, None, None
+        if dati.empty or len(dati) < 200:
+            return None
 
         dati['Ritorno_Prezzo'] = dati['Close'].pct_change()
         dati['Media_20'] = dati['Close'].rolling(window=20).mean()
         dati['Media_50'] = dati['Close'].rolling(window=50).mean()
-        
-        # TARGET COERENTE: Domani Close > Oggi Close
         dati['Target'] = np.where(dati['Close'].shift(-1) > dati['Close'], 1, 0)
 
         delta = dati['Close'].diff()
@@ -48,55 +46,47 @@ def addestra_modello_ia(ticker):
         dati['MACD_Signal'] = dati['MACD'].ewm(span=9, adjust=False).mean()
         dati['MACD_Hist'] = dati['MACD'] - dati['MACD_Signal']
 
-        variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
-                     'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
-
-        dati_training = dati.dropna(subset=variabili + ['Target'])
-        
-        X = dati_training[variabili]
-        y = dati_training['Target']
-
-        modello = RandomForestClassifier(n_estimators=150, min_samples_leaf=5, random_state=42)
-        modello.fit(X, y)
-
-        ultimo_dato_fresco = dati[variabili].iloc[-1:]
-
-        return modello, ultimo_dato_fresco, dati
+        return dati.dropna()
 
     except Exception as e:
-        st.error(f"Errore nell'addestramento IA: {e}")
-        return None, None, None
+        st.error(f"Errore nel download dati: {e}")
+        return None
 
-# --- 2. SCARICAMENTO DATI ---
 ticker_attivo = "CL=F" # WTI Crude Oil
-df_storico_completo = addestra_modello_ia(ticker_attivo)[2]
-modello_rf, ultimo_dato_ia, _ = addestra_modello_ia(ticker_attivo)
+df_storico = scarica_dati_base(ticker_attivo)
 
-if modello_rf is None:
-    st.error("⚠️ Errore nell'inizializzazione del modello IA.")
+if df_storico is None:
+    st.error("⚠️ Errore nel caricamento dei dati di mercato.")
     st.stop()
 
-# PREDIZIONE IA PURA LIVE
-probabilita = modello_rf.predict_proba(ultimo_dato_ia)[0]
-predizione_ia = modello_rf.predict(ultimo_dato_ia)[0]
-confidenza_ia = probabilita[predizione_ia] * 100
-
-prezzo_live = round(float(df_storico_completo['Close'].iloc[-1]), 3)
+prezzo_live = round(float(df_storico['Close'].iloc[-1]), 3)
 
 # --- PANNELLO LATERALE ---
 st.sidebar.header("💰 Gestione Capitale & Costi")
 capitale_utente = st.sidebar.number_input("Capitale Iniziale (€):", value=1500.0, step=100.0)
 costo_attrito = st.sidebar.number_input("Costi Fissi (Comm. + Spread €):", value=12.0, step=1.0)
 soglia_filtro = st.sidebar.slider("Soglia Confidenza Minima IA (%):", 50.0, 75.0, 55.0, 1.0)
-dimensione_lotto = st.sidebar.number_input("Moltiplicatore Contratto (Barili/Unità):", value=10.0, step=1.0)
+dimensione_lotto = st.sidebar.number_input("Moltiplicatore Contratto (Barili):", value=10.0, step=1.0)
 
 st.sidebar.markdown("---")
 st.sidebar.header("🔄 Modalità Operativa")
 modalita_inversa = st.sidebar.checkbox("Attiva 'Anti-IA Mode' (Inverti Segnali)", value=True)
 
-segnalo_ia_str = "LONG" if predizione_ia == 1 else "SHORT"
-operazione_eseguita = 0 if (predizione_ia == 1 and modalita_inversa) or (predizione_ia == 0 and not modalita_inversa) else 1
-direzione_effettiva_str = "LONG" if operazione_eseguita == 1 else "SHORT"
+# Addestriamo il modello sull'ultimo blocco per il segnale live odierno
+variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
+             'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
+
+modello_live = RandomForestClassifier(n_estimators=150, min_samples_leaf=5, random_state=42)
+modello_live.fit(df_storico[variabili].iloc[:-1], df_storico['Target'].iloc[:-1])
+
+ultimo_dato = df_storico[variabili].iloc[[-1]]
+prob_live = modello_live.predict_proba(ultimo_dato)[0]
+pred_live_nativa = modello_live.predict(ultimo_dato)[0]
+confidenza_ia = prob_live[pred_live_nativa] * 100
+
+segnalo_ia_str = "LONG" if pred_live_nativa == 1 else "SHORT"
+op_live = 0 if (pred_live_nativa == 1 and modalita_inversa) or (pred_live_nativa == 0 and not modalita_inversa) else 1
+direzione_effettiva_str = "LONG" if op_live == 1 else "SHORT"
 stato_inversa_str = "ATTIVA 🔄" if modalita_inversa else "DISATTIVA"
 
 st.markdown(f"**Asset Monitorato:** `{ticker_attivo}` | Modalità Inversa: **{stato_inversa_str}**")
@@ -110,54 +100,58 @@ with col1:
 
 with col2:
     st.metric("Prezzo WTI Odierno", prezzo_live)
-    st.metric("Confidenza IA", f"{confidenza_ia:.1f}%")
+    st.metric("Confidenza IA (OOS)", f"{confidenza_ia:.1f}%")
 
 # ==========================================
-# 3. BACKTEST STORICO COERENTE (CLOSE-TO-CLOSE)
+# 2. BACKTEST WALK-FORWARD (OUT-OF-SAMPLE)
 # ==========================================
 st.markdown("---")
-st.subheader("📊 Backtest Storico Coerente (Ultimi 6 Mesi - Close to Close)")
+st.subheader("📊 Backtest Walk-Forward (Rilevamento Overfitting Out-of-Sample)")
 
-def esegui_backtest_coerente(dati_completi, modello, capitale_iniziale, attrito, conf_minima, inverti, lotto):
+def esegui_walk_forward(dati, capitale_iniziale, attrito, conf_minima, inverti, lotto):
     equity = [capitale_iniziale]
     trade_log = []
     capitale_corrente = capitale_iniziale
     
-    test_df = dati_completi.tail(126).copy()
+    # Prendiamo gli ultimi 126 giorni (circa 6 mesi) da testare fuori campione
+    finestra_test = 126
+    punto_inizio = len(dati) - finestra_test
     
     variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
                  'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
     
-    for i in range(len(test_df) - 1):
-        riga_corr = test_df.iloc[i:i+1][variabili]
-        if riga_corr.isna().any().any():
-            continue
-            
-        prob = modello.predict_proba(riga_corr)[0]
-        pred_ia_nativo = modello.predict(riga_corr)[0]
-        conf = prob[pred_ia_nativo] * 100
+    for i in range(punto_inizio, len(dati) - 1):
+        # Alleniamo il modello SOLO sui dati passati disponibili fino al giorno prima del trade
+        dati_train = dati.iloc[:i]
+        
+        X_train = dati_train[variabili]
+        y_train = dati_train['Target']
+        
+        modello_wf = RandomForestClassifier(n_estimators=100, min_samples_leaf=5, random_state=42)
+        modello_wf.fit(X_train, y_train)
+        
+        # Testiamo rigorosamente sul giorno successivo (Out-of-Sample puro)
+        riga_test = dati.iloc[i:i+1][variabili]
+        prob = modello_wf.predict_proba(riga_test)[0]
+        pred_ia = modello_wf.predict(riga_test)[0]
+        conf = prob[pred_ia] * 100
         
         if conf < conf_minima:
             continue
             
-        # Logica Anti-IA
         if inverti:
-            op_eseguita = 0 if pred_ia_nativo == 1 else 1
+            op_eseguita = 0 if pred_ia == 1 else 1
         else:
-            op_eseguita = pred_ia_nativo
+            op_eseguita = pred_ia
             
-        data_trade = test_df.index[i].date()
-        prezzo_entrata = test_df['Close'].iloc[i]
-        prezzo_uscita = test_df['Close'].iloc[i+1]
+        data_trade = dati.index[i].date()
+        prezzo_entrata = dati['Close'].iloc[i]
+        prezzo_uscita = dati['Close'].iloc[i+1]
         
-        variazione_prezzo = prezzo_uscita - prezzo_entrata
-        
-        if op_eseguita == 1: # LONG
-            pnl_lordo = variazione_prezzo * lotto
-        else: # SHORT
-            pnl_lordo = -variazione_prezzo * lotto
-            
+        variazione = prezzo_uscita - prezzo_entrata
+        pnl_lordo = variazione * lotto if op_eseguita == 1 else -variazione * lotto
         pnl_netto = pnl_lordo - attrito
+        
         capitale_corrente += pnl_netto
         equity.append(capitale_corrente)
         
@@ -165,10 +159,9 @@ def esegui_backtest_coerente(dati_completi, modello, capitale_iniziale, attrito,
         
         trade_log.append({
             "Data": str(data_trade),
-            "IA": "LONG" if pred_ia_nativo == 1 else "SHORT",
+            "IA": "LONG" if pred_ia == 1 else "SHORT",
             "Eseguito": "LONG" if op_eseguita == 1 else "SHORT",
-            "Entrata": round(prezzo_entrata, 2),
-            "Uscita": round(prezzo_uscita, 2),
+            "Confidenza": round(conf, 1),
             "Esito": esito,
             "PnL (€)": round(pnl_netto, 2),
             "Capitale (€)": round(capitale_corrente, 2)
@@ -176,24 +169,24 @@ def esegui_backtest_coerente(dati_completi, modello, capitale_iniziale, attrito,
         
     return pd.DataFrame(trade_log), equity
 
-if df_storico_completo is not None:
-    df_res_bt, eq_bt = esegui_backtest_coerente(df_storico_completo, modello_rf, capitale_utente, costo_attrito, soglia_filtro, modalita_inversa, dimensione_lotto)
+if df_storico is not None:
+    df_res_wf, eq_wf = esegui_walk_forward(df_storico, capitale_utente, costo_attrito, soglia_filtro, modalita_inversa, dimensione_lotto)
     
-    if not df_res_bt.empty:
-        tot_t = len(df_res_bt)
-        vinti_t = len(df_res_bt[df_res_bt['Esito'] == "WIN"])
+    if not df_res_wf.empty:
+        tot_t = len(df_res_wf)
+        vinti_t = len(df_res_wf[df_res_wf['Esito'] == "WIN"])
         wr_t = (vinti_t / tot_t) * 100
-        net_profit = eq_bt[-1] - capitale_utente
+        net_profit = eq_wf[-1] - capitale_utente
         
-        bt_c1, bt_c2, bt_c3, bt_c4 = st.columns(4)
-        bt_c1.metric("Trade Effettuati", tot_t)
-        bt_c2.metric("Win Rate Storico", f"{wr_t:.1f}%")
-        bt_c3.metric("Profitto Netto", f"{net_profit:.2f} €")
-        bt_c4.metric("Capitale Finale", f"{eq_bt[-1]:.2f} €")
+        wf_c1, wf_c2, wf_c3, wf_c4 = st.columns(4)
+        wf_c1.metric("Trade OOS Effettuati", tot_t)
+        wf_c2.metric("Win Rate Out-of-Sample", f"{wr_t:.1f}%")
+        wf_c3.metric("Profitto Netto OOS", f"{net_profit:.2f} €")
+        wf_c4.metric("Capitale Finale OOS", f"{eq_wf[-1]:.2f} €")
         
-        st.line_chart(eq_bt)
+        st.line_chart(eq_wf)
         
-        with st.expander("🔍 Vedi Storico Operazioni Coerente"):
-            st.dataframe(df_res_bt)
+        with st.expander("🔍 Vedi Storico Dettagliato Walk-Forward"):
+            st.dataframe(df_res_wf)
     else:
         st.warning("⚠️ Nessun trade generato con la soglia di confidenza attuale.")
