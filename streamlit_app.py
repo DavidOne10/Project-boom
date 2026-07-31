@@ -128,16 +128,15 @@ else:
 
 euro_da_rischiare = capitale_utente * pct_rischio
 
-# --- METRICHE LIVE (Adattate alla modalità) ---
-pred_effettiva = 0 if predizione_ia == 1 else 1 if modalita_inversa else predizione_ia
-# Se modalita_inversa è attivo, invertiamo la direzione live
+# --- METRICHE LIVE ---
+stato_inversa_str = "ATTIVA 🔄" if modalita_inversa else "DISATTIVA"
 direzione_live_str = "LONG" if (predizione_ia == 1 and not modalita_inversa) or (predizione_ia == 0 and modalita_inversa) else "SHORT"
 
-st.markdown(f"**Asset Monitorato:** `{ticker_attivo}` | Modalità Inversa: **{'ATTIVA 🔄' / modalita_inversa if modalita_inversa else 'DISATTIVA'}**")
+st.markdown(f"**Asset Monitorato:** `{ticker_attivo}` | Modalità Inversa: **{stato_inversa_str}**")
 col1, col2, col3 = st.columns(3)
 col1.metric("Supporto V-Alpha", supporto_operativo)
 col2.metric("Prezzo WTI Live", prezzo_live)
-col3.metric("Resistenza V-Alpha", resistencia_operativa)
+col3.metric("Resistenza V-Alpha", resistenza_operativa)
 
 st.markdown("---")
 st.subheader(f"🔮 Segnale Live ({'INVERTITO - Anti-IA' if modalita_inversa else 'Standard'})")
@@ -181,7 +180,6 @@ def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_
         if conf < conf_minima:
             continue
             
-        # SE LA MODALITÀ INVERSA È ATTIVA, INVERTIAMO IL SEGNALE DELL'IA
         if inverti:
             pred = 0 if pred == 1 else 1
             
@@ -189,7 +187,6 @@ def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_
         open_oggi = test_df['Open'].iloc[i]
         high_oggi = test_df['High'].iloc[i]
         low_oggi = test_df['Low'].iloc[i]
-        close_oggi = test_df['Close'].iloc[i]
         
         atr_giornaliero = high_oggi - low_oggi
         if atr_giornaliero <= 0:
