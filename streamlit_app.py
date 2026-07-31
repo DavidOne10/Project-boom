@@ -6,12 +6,12 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
 # --- CONFIGURAZIONE INTERFACCIA ---
-st.set_page_config(page_title="V-Alpha PRO | Knockout Trading AI", layout="wide")
+st.set_page_config(page_title="V-Alpha PRO | Daily Coherent Backtest", layout="wide")
 
-st.title("🤖 V-Alpha PRO | Random Forest AI (Anti-IA & Knockout Edition)")
+st.title("🤖 V-Alpha PRO | Daily Coherent Backtest (Anti-IA & Costi Fissi)")
 st.markdown("---")
 
-# --- 1. MOTORE ADDESTRAMENTO RANDOM FOREST (DAILY) ---
+# --- 1. MOTORE ADDESTRAMENTO RANDOM FOREST (DAILY COERENTE) ---
 @st.cache_data(ttl=3600)
 def addestra_modello_ia(ticker):
     try:
@@ -25,6 +25,8 @@ def addestra_modello_ia(ticker):
         dati['Ritorno_Prezzo'] = dati['Close'].pct_change()
         dati['Media_20'] = dati['Close'].rolling(window=20).mean()
         dati['Media_50'] = dati['Close'].rolling(window=50).mean()
+        
+        # TARGET COERENTE: Domani Close > Oggi Close
         dati['Target'] = np.where(dati['Close'].shift(-1) > dati['Close'], 1, 0)
 
         delta = dati['Close'].diff()
@@ -65,27 +67,10 @@ def addestra_modello_ia(ticker):
         st.error(f"Errore nell'addestramento IA: {e}")
         return None, None, None
 
-# --- 2. SCARICAMENTO DATI LIVE INTRADAY ---
-@st.cache_data(ttl=60)
-def carica_dati_intraday():
-    for ticker in ["CL=F", "BZ=F", "USOIL=X"]:
-        try:
-            df = yf.download(ticker, period="2d", interval="5m", auto_adjust=True, progress=False)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            if not df.empty and 'Close' in df.columns:
-                return df, ticker
-        except Exception:
-            continue
-    return None, None
-
-df_5m, ticker_attivo = carica_dati_intraday()
-
-if df_5m is None:
-    st.error("⚠️ Connessione ai dati di mercato non disponibile.")
-    st.stop()
-
-modello_rf, ultimo_dato_ia, df_storico_completo = addestra_modello_ia(ticker_attivo)
+# --- 2. SCARICAMENTO DATI ---
+ticker_attivo = "CL=F" # WTI Crude Oil
+df_storico_completo = addestra_modello_ia(ticker_attivo)[2]
+modello_rf, ultimo_dato_ia, _ = addestra_modello_ia(ticker_attivo)
 
 if modello_rf is None:
     st.error("⚠️ Errore nell'inizializzazione del modello IA.")
@@ -93,80 +78,47 @@ if modello_rf is None:
 
 # PREDIZIONE IA PURA LIVE
 probabilita = modello_rf.predict_proba(ultimo_dato_ia)[0]
-predizione_ia = modello_rf.predict(ultimo_dato_ia)[0] # 1 = LONG, 0 = SHORT
+predizione_ia = modello_rf.predict(ultimo_dato_ia)[0]
 confidenza_ia = probabilita[predizione_ia] * 100
 
-prezzo_live = round(float(df_5m['Close'].iloc[-1]), 3)
-oggi = df_5m.index[-1].date()
-df_today = df_5m[df_5m.index.date == oggi]
-if df_today.empty:
-    df_today = df_5m.tail(50)
-
-high_mattina = float(df_today['High'].max())
-low_mattina = float(df_today['Low'].min())
-range_totale = high_mattina - low_mattina
-supporto_operativo = round(low_mattina + (range_totale * 0.2), 3)
-resistenza_operativa = round(high_mattina - (range_totale * 0.2), 3)
-atr = round(range_totale / 5, 3)
+prezzo_live = round(float(df_storico_completo['Close'].iloc[-1]), 3)
 
 # --- PANNELLO LATERALE ---
 st.sidebar.header("💰 Gestione Capitale & Costi")
 capitale_utente = st.sidebar.number_input("Capitale Iniziale (€):", value=1500.0, step=100.0)
 costo_attrito = st.sidebar.number_input("Costi Fissi (Comm. + Spread €):", value=12.0, step=1.0)
 soglia_filtro = st.sidebar.slider("Soglia Confidenza Minima IA (%):", 50.0, 75.0, 55.0, 1.0)
+dimensione_lotto = st.sidebar.number_input("Moltiplicatore Contratto (Barili/Unità):", value=10.0, step=1.0)
 
 st.sidebar.markdown("---")
 st.sidebar.header("🔄 Modalità Operativa")
 modalita_inversa = st.sidebar.checkbox("Attiva 'Anti-IA Mode' (Inverti Segnali)", value=True)
 
-if confidenza_ia < 55:
-    pct_rischio = 0.01
-elif confidenza_ia < 65:
-    pct_rischio = 0.02
-else:
-    pct_rischio = 0.03
-
-euro_da_rischiare = capitale_utente * pct_rischio
-
-# --- LOGICA LIVE: SEGNALE IA vs OPERAZIONE EFFETTIVA ---
 segnalo_ia_str = "LONG" if predizione_ia == 1 else "SHORT"
-
-# Se la modalità inversa è attiva, eseguiamo l'opposto di quello che dice l'IA
-if modalita_inversa:
-    operazione_eseguita = 0 if predizione_ia == 1 else 1
-else:
-    operazione_eseguita = predizione_ia
-
+operazione_eseguita = 0 if (predizione_ia == 1 and modalita_inversa) or (predizione_ia == 0 and not modalita_inversa) else 1
 direzione_effettiva_str = "LONG" if operazione_eseguita == 1 else "SHORT"
 stato_inversa_str = "ATTIVA 🔄" if modalita_inversa else "DISATTIVA"
 
 st.markdown(f"**Asset Monitorato:** `{ticker_attivo}` | Modalità Inversa: **{stato_inversa_str}**")
-col1, col2, col3 = st.columns(3)
-col1.metric("Supporto V-Alpha", supporto_operativo)
-col2.metric("Prezzo WTI Live", prezzo_live)
-col3.metric("Resistenza V-Alpha", resistenza_operativa)
 
-st.markdown("---")
-st.subheader(f"🔮 Segnale Live (IA Pura: {segnalo_ia_str} ➡️ Eseguiamo: {direzione_effettiva_str})")
-
-c_pred1, c_pred2 = st.columns(2)
-with c_pred1:
+col1, col2 = st.columns(2)
+with col1:
     if direzione_effettiva_str == "LONG":
-        st.success(f"OPERAZIONE A MERCATO: LONG 🟢 (L'IA diceva {segnalo_ia_str})")
+        st.success(f"SEGNALE LIVE: LONG 🟢 (IA diceva: {segnalo_ia_str})")
     else:
-        st.error(f"OPERAZIONE A MERCATO: SHORT 🔴 (L'IA diceva {segnalo_ia_str})")
+        st.error(f"SEGNALE LIVE: SHORT 🔴 (IA diceva: {segnalo_ia_str})")
 
-with c_pred2:
+with col2:
+    st.metric("Prezzo WTI Odierno", prezzo_live)
     st.metric("Confidenza IA", f"{confidenza_ia:.1f}%")
-    st.metric("Rischio Profilo", f"{pct_rischio*100:.0f}% ({euro_da_rischiare:.2f} €)")
 
 # ==========================================
-# 3. BACKTEST STORICO CON SEPARAZIONE IA / OPERAZIONE
+# 3. BACKTEST STORICO COERENTE (CLOSE-TO-CLOSE)
 # ==========================================
 st.markdown("---")
-st.subheader("📊 Backtest Storico (Ultimi 6 Mesi con Costi Fissi)")
+st.subheader("📊 Backtest Storico Coerente (Ultimi 6 Mesi - Close to Close)")
 
-def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_minima, inverti):
+def esegui_backtest_coerente(dati_completi, modello, capitale_iniziale, attrito, conf_minima, inverti, lotto):
     equity = [capitale_iniziale]
     trade_log = []
     capitale_corrente = capitale_iniziale
@@ -176,8 +128,8 @@ def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_
     variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
                  'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
     
-    for i in range(1, len(test_df)):
-        riga_corr = test_df.iloc[i-1:i][variabili]
+    for i in range(len(test_df) - 1):
+        riga_corr = test_df.iloc[i:i+1][variabili]
         if riga_corr.isna().any().any():
             continue
             
@@ -188,55 +140,44 @@ def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_
         if conf < conf_minima:
             continue
             
-        # Determiniamo l'operazione effettiva in base al flag di inversione
+        # Logica Anti-IA
         if inverti:
             op_eseguita = 0 if pred_ia_nativo == 1 else 1
         else:
             op_eseguita = pred_ia_nativo
             
         data_trade = test_df.index[i].date()
-        open_oggi = test_df['Open'].iloc[i]
-        high_oggi = test_df['High'].iloc[i]
-        low_oggi = test_df['Low'].iloc[i]
+        prezzo_entrata = test_df['Close'].iloc[i]
+        prezzo_uscita = test_df['Close'].iloc[i+1]
         
-        atr_giornaliero = high_oggi - low_oggi
-        if atr_giornaliero <= 0:
-            continue
+        variazione_prezzo = prezzo_uscita - prezzo_entrata
+        
+        if op_eseguita == 1: # LONG
+            pnl_lordo = variazione_prezzo * lotto
+        else: # SHORT
+            pnl_lordo = -variazione_prezzo * lotto
             
-        if op_eseguita == 1: # LONG Effettivo
-            rischio = atr_giornaliero * 0.5
-            reward = atr_giornaliero * 1.0
-            if high_oggi >= open_oggi + reward:
-                pnl = reward - attrito
-                esito = "WIN"
-            else:
-                pnl = -rischio - attrito
-                esito = "LOSS"
-        else: # SHORT Effettivo
-            rischio = atr_giornaliero * 0.5
-            reward = atr_giornaliero * 1.0
-            if low_oggi <= open_oggi - reward:
-                pnl = reward - attrito
-                esito = "WIN"
-            else:
-                pnl = -rischio - attrito
-                esito = "LOSS"
-                
-        capitale_corrente += pnl
+        pnl_netto = pnl_lordo - attrito
+        capitale_corrente += pnl_netto
         equity.append(capitale_corrente)
+        
+        esito = "WIN" if pnl_netto > 0 else "LOSS"
+        
         trade_log.append({
-            "Data": str(data_trade), 
-            "Segnale IA": "LONG" if pred_ia_nativo==1 else "SHORT",
-            "Eseguito": "LONG" if op_eseguita==1 else "SHORT", 
-            "Esito": esito, 
-            "PnL": round(pnl, 2), 
-            "Equity": round(capitale_corrente, 2)
+            "Data": str(data_trade),
+            "IA": "LONG" if pred_ia_nativo == 1 else "SHORT",
+            "Eseguito": "LONG" if op_eseguita == 1 else "SHORT",
+            "Entrata": round(prezzo_entrata, 2),
+            "Uscita": round(prezzo_uscita, 2),
+            "Esito": esito,
+            "PnL (€)": round(pnl_netto, 2),
+            "Capitale (€)": round(capitale_corrente, 2)
         })
         
     return pd.DataFrame(trade_log), equity
 
 if df_storico_completo is not None:
-    df_res_bt, eq_bt = esegui_backtest_rf(df_storico_completo, modello_rf, capitale_utente, costo_attrito, soglia_filtro, modalita_inversa)
+    df_res_bt, eq_bt = esegui_backtest_coerente(df_storico_completo, modello_rf, capitale_utente, costo_attrito, soglia_filtro, modalita_inversa, dimensione_lotto)
     
     if not df_res_bt.empty:
         tot_t = len(df_res_bt)
@@ -252,7 +193,7 @@ if df_storico_completo is not None:
         
         st.line_chart(eq_bt)
         
-        with st.expander("🔍 Vedi Storico Operazioni Backtest"):
+        with st.expander("🔍 Vedi Storico Operazioni Coerente"):
             st.dataframe(df_res_bt)
     else:
         st.warning("⚠️ Nessun trade generato con la soglia di confidenza attuale.")
