@@ -6,12 +6,12 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
 # --- CONFIGURAZIONE INTERFACCIA ---
-st.set_page_config(page_title="V-Alpha PRO | S&P 500 Special Edition", layout="wide")
+st.set_page_config(page_title="V-Alpha PRO | S&P 500 Dashboard", layout="wide", page_icon="📈")
 
-st.title("🤖 V-Alpha PRO | S&P 500 Target Dedicato (Anti-Overfitting & SL/TP)")
+st.title("🤖 V-Alpha PRO | S&P 500 Control Center")
 st.markdown("---")
 
-TICKER = "^GSPC"  # S&P 500 fisso sul cavallo vincente
+TICKER = "^GSPC"  # S&P 500
 
 # --- 1. FUNZIONE DI PREPARAZIONE DATI ---
 @st.cache_data(ttl=3600)
@@ -58,26 +58,24 @@ if df_storico is None:
     st.error("⚠️ Errore nel caricamento dei dati dello S&P 500.")
     st.stop()
 
-# --- PANNELLO LATERALE ---
-st.sidebar.header("💰 Gestione Capitale & Rischio")
-capitale_utente = st.sidebar.number_input("Capitale Iniziale (€):", value=1500.0, step=100.0)
-spread_cost = st.sidebar.number_input("Costo Spread/Attrito ($):", value=0.50, step=0.10, format="%.2f")
-soglia_filtro = st.sidebar.slider("Soglia Confidenza Minima IA (%):", 50.0, 75.0, 55.0, 1.0)
-dimensione_lotto = st.sidebar.number_input("Moltiplicatore Contratto:", value=1.0, step=0.1)
+# --- PANNELLO LATERALE PULITO ---
+st.sidebar.header("⚙️ Impostazioni Strategia")
 
-st.sidebar.markdown("---")
-st.sidebar.header("🛡️ Parametri Stop Loss / Take Profit")
-attiva_sl_tp = st.sidebar.checkbox("Attiva SL / TP Dinamici", value=True)
-pct_sl = st.sidebar.slider("Stop Loss (%)", 0.5, 3.0, 1.5, 0.1) / 100.0
-pct_tp = st.sidebar.slider("Take Profit (%)", 0.5, 5.0, 2.5, 0.1) / 100.0
+with st.sidebar.expander("💰 Capitale & Costi", expanded=True):
+    capitale_utente = st.number_input("Capitale Iniziale (€):", value=1500.0, step=100.0)
+    spread_cost = st.number_input("Costo Spread ($):", value=0.50, step=0.10, format="%.2f")
+    dimensione_lotto = st.number_input("Moltiplicatore Contratto:", value=1.0, step=0.1)
 
-st.sidebar.markdown("---")
-st.sidebar.header("🔄 Modalità Operativa")
-modalita_inversa = st.sidebar.checkbox("Attiva 'Anti-IA Mode' (Inverti Segnali)", value=True)
+with st.sidebar.expander("🛡️ Stop Loss & Take Profit", expanded=True):
+    attiva_sl_tp = st.checkbox("Attiva SL / TP Dinamici", value=True)
+    pct_sl = st.slider("Stop Loss (%)", 0.5, 3.0, 1.5, 0.1) / 100.0
+    pct_tp = st.slider("Take Profit (%)", 0.5, 5.0, 2.5, 0.1) / 100.0
 
-# ==========================================
-# 2. MOTORE BACKTEST WALK-FORWARD CON SL/TP
-# ==========================================
+with st.sidebar.expander("🔄 Filtri IA", expanded=True):
+    soglia_filtro = st.slider("Confidenza Minima IA (%):", 50.0, 75.0, 55.0, 1.0)
+    modalita_inversa = st.checkbox("Attiva 'Anti-IA Mode'", value=True)
+
+# --- MOTORE BACKTEST ---
 def esegui_walk_forward_ssp500(dati, capitale_iniziale, spread, conf_minima, inverti, lotto, usa_sltp, sl_val, tp_val):
     equity = [capitale_iniziale]
     trade_log = []
@@ -162,9 +160,7 @@ def esegui_walk_forward_ssp500(dati, capitale_iniziale, spread, conf_minima, inv
         
     return pd.DataFrame(trade_log), equity
 
-# ==========================================
-# 3. ESECUZIONE E SEGNALE LIVE S&P 500
-# ==========================================
+# Calcolo modello live
 variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
              'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
 
@@ -182,42 +178,52 @@ prezzo_live = round(float(df_storico['Close'].iloc[-1]), 2)
 segnalo_ia_str = "LONG" if pred_live_nativa == 1 else "SHORT"
 op_live = 0 if (pred_live_nativa == 1 and modalita_inversa) or (pred_live_nativa == 0 and not modalita_inversa) else 1
 direzione_effettiva_str = "LONG" if op_live == 1 else "SHORT"
-stato_inversa_str = "ATTIVA 🔄" if modalita_inversa else "DISATTIVA"
-
-st.subheader("🎯 Segnale Operativo Live S&P 500")
-col_l1, col_l2 = st.columns(2)
-with col_l1:
-    if direzione_effettiva_str == "LONG":
-        st.success(f"SEGNALE LIVE: LONG 🟢 (IA originaria: {segnalo_ia_str})")
-    else:
-        st.error(f"SEGNALE LIVE: SHORT 🔴 (IA originaria: {segnalo_ia_str})")
-
-with col_l2:
-    st.metric("Prezzo S&P 500 Odierno", prezzo_live)
-    st.metric("Confidenza IA", f"{confidenza_ia:.1f}%")
-
-st.markdown("---")
-st.subheader("📊 Risultati Walk-Forward & Curva Equity (S&P 500)")
 
 df_res, eq_res = esegui_walk_forward_ssp500(
     df_storico, capitale_utente, spread_cost, soglia_filtro, modalita_inversa, dimensione_lotto, attiva_sl_tp, pct_sl, pct_tp
 )
 
-if not df_res.empty:
-    tot_t = len(df_res)
-    vinti_t = len(df_res[df_res['Esito'] == "WIN"])
-    wr_t = (vinti_t / tot_t) * 100
-    net_profit = eq_res[-1] - capitale_utente
+# --- STRUTTURA A SCHEDE (TABS) PER PULIZIA VISIVA ---
+tab_live, tab_backtest, tab_storico = st.tabs(["🎯 Segnale Operativo Live", "📊 Analisi & Performance", "📋 Storico Dettagliato"])
+
+with tab_live:
+    st.subheader("Verdetto Operativo per la Prossima Sessione")
     
-    wf_c1, wf_c2, wf_c3, wf_c4 = st.columns(4)
-    wf_c1.metric("Trade OOS Effettuati", tot_t)
-    wf_c2.metric("Win Rate Reale", f"{wr_t:.1f}%")
-    wf_c3.metric("Profitto Netto OOS", f"{net_profit:.2f} €")
-    wf_c4.metric("Capitale Finale", f"{eq_res[-1]:.2f} €")
-    
-    st.line_chart(eq_res)
-    
-    with st.expander("🔍 Storico Operazioni Dettagliato"):
+    col_l1, col_l2 = st.columns(2)
+    with col_l1:
+        if direzione_effettiva_str == "LONG":
+            st.success(f"### DIREZIONE: LONG 🟢\n*(Il modello originale suggeriva: {segnalo_ia_str})*")
+        else:
+            st.error(f"### DIREZIONE: SHORT 🔴\n*(Il modello originale suggeriva: {segnalo_ia_str})*")
+
+    with col_l2:
+        st.metric("Prezzo S&P 500 Odierno", prezzo_live)
+        st.metric("Confidenza IA", f"{confidenza_ia:.1f}%")
+        
+    st.info("💡 **Come procedere su Fineco:** Apri il certificato Knock-Out o il derivato sull'S&P 500 rispettando la direzione indicata e impostando lo Stop Loss calcolato.")
+
+with tab_backtest:
+    st.subheader("Performance Complessiva del Modello (OOS)")
+    if not df_res.empty:
+        tot_t = len(df_res)
+        vinti_t = len(df_res[df_res['Esito'] == "WIN"])
+        wr_t = (vinti_t / tot_t) * 100
+        net_profit = eq_res[-1] - capitale_utente
+        
+        wf_c1, wf_c2, wf_c3, wf_c4 = st.columns(4)
+        wf_c1.metric("Trade Effettuati", tot_t)
+        wf_c2.metric("Win Rate Reale", f"{wr_t:.1f}%")
+        wf_c3.metric("Profitto Netto OOS", f"{net_profit:.2f} €")
+        wf_c4.metric("Capitale Finale", f"{eq_res[-1]:.2f} €")
+        
+        st.markdown("#### Curva Equity")
+        st.line_chart(eq_res)
+    else:
+        st.warning("⚠️ Nessun trade generato con i parametri attuali.")
+
+with tab_storico:
+    st.subheader("Registro Completo delle Operazioni")
+    if not df_res.empty:
         st.dataframe(df_res, use_container_width=True)
-else:
-    st.warning("⚠️ Nessun trade generato con i parametri attuali. Prova ad abbassare la soglia di confidenza.")
+    else:
+        st.warning("⚠️ Nessun dato da mostrare nello storico.")
