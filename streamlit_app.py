@@ -6,7 +6,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
 # --- CONFIGURAZIONE INTERFACCIA ---
-st.set_page_config(page_title="V-Alpha PRO | S&P 500 Dashboard", layout="wide", page_icon="📈")
+st.set_page_config(page_title="V-Alpha PRO | S&P 500 Control Center", layout="wide", page_icon="📈")
 
 st.title("🤖 V-Alpha PRO | S&P 500 Control Center")
 st.markdown("---")
@@ -179,11 +179,19 @@ segnalo_ia_str = "LONG" if pred_live_nativa == 1 else "SHORT"
 op_live = 0 if (pred_live_nativa == 1 and modalita_inversa) or (pred_live_nativa == 0 and not modalita_inversa) else 1
 direzione_effettiva_str = "LONG" if op_live == 1 else "SHORT"
 
+# Calcolo livelli operativi live esatti
+if direzione_effettiva_str == "LONG":
+    sl_live_val = prezzo_live * (1 - pct_sl)
+    tp_live_val = prezzo_live * (1 + pct_tp)
+else:
+    sl_live_val = prezzo_live * (1 + pct_sl)
+    tp_live_val = prezzo_live * (1 - pct_tp)
+
 df_res, eq_res = esegui_walk_forward_ssp500(
     df_storico, capitale_utente, spread_cost, soglia_filtro, modalita_inversa, dimensione_lotto, attiva_sl_tp, pct_sl, pct_tp
 )
 
-# --- STRUTTURA A SCHEDE (TABS) PER PULIZIA VISIVA ---
+# --- STRUTTURA A SCHEDE (TABS) ---
 tab_live, tab_backtest, tab_storico = st.tabs(["🎯 Segnale Operativo Live", "📊 Analisi & Performance", "📋 Storico Dettagliato"])
 
 with tab_live:
@@ -200,7 +208,15 @@ with tab_live:
         st.metric("Prezzo S&P 500 Odierno", prezzo_live)
         st.metric("Confidenza IA", f"{confidenza_ia:.1f}%")
         
-    st.info("💡 **Come procedere su Fineco:** Apri il certificato Knock-Out o il derivato sull'S&P 500 rispettando la direzione indicata e impostando lo Stop Loss calcolato.")
+    st.markdown("---")
+    st.subheader("🛠️ Piano Operativo Pronto per Fineco")
+    
+    col_p1, col_p2, col_p3 = st.columns(3)
+    col_p1.metric("Prezzo di Riferimento", f"{prezzo_live}")
+    col_p2.metric("Stop Loss Consigliato", f"{sl_live_val:.2f}", delta=f"-{pct_sl*100}%", delta_color="inverse")
+    col_p3.metric("Take Profit Consigliato", f"{tp_live_val:.2f}", delta=f"+{pct_tp*100}%", delta_color="normal")
+    
+    st.info("💡 **Istruzioni:** Inserisci l'ordine sul certificato o derivato seguendo la direzione indicata, impostando i livelli di Stop Loss e Take Profit calcolati qui sopra.")
 
 with tab_backtest:
     st.subheader("Performance Complessiva del Modello (OOS)")
