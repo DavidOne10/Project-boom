@@ -93,7 +93,7 @@ if modello_rf is None:
 
 # PREDIZIONE IA PURA LIVE
 probabilita = modello_rf.predict_proba(ultimo_dato_ia)[0]
-predizione_ia = modello_rf.predict(ultimo_dato_ia)[0]
+predizione_ia = modello_rf.predict(ultimo_dato_ia)[0] # 1 = LONG, 0 = SHORT
 confidenza_ia = probabilita[predizione_ia] * 100
 
 prezzo_live = round(float(df_5m['Close'].iloc[-1]), 3)
@@ -128,9 +128,17 @@ else:
 
 euro_da_rischiare = capitale_utente * pct_rischio
 
-# --- METRICHE LIVE ---
+# --- LOGICA LIVE: SEGNALE IA vs OPERAZIONE EFFETTIVA ---
+segnalo_ia_str = "LONG" if predizione_ia == 1 else "SHORT"
+
+# Se la modalità inversa è attiva, eseguiamo l'opposto di quello che dice l'IA
+if modalita_inversa:
+    operazione_eseguita = 0 if predizione_ia == 1 else 1
+else:
+    operazione_eseguita = predizione_ia
+
+direzione_effettiva_str = "LONG" if operazione_eseguita == 1 else "SHORT"
 stato_inversa_str = "ATTIVA 🔄" if modalita_inversa else "DISATTIVA"
-direzione_live_str = "LONG" if (predizione_ia == 1 and not modalita_inversa) or (predizione_ia == 0 and modalita_inversa) else "SHORT"
 
 st.markdown(f"**Asset Monitorato:** `{ticker_attivo}` | Modalità Inversa: **{stato_inversa_str}**")
 col1, col2, col3 = st.columns(3)
@@ -139,21 +147,21 @@ col2.metric("Prezzo WTI Live", prezzo_live)
 col3.metric("Resistenza V-Alpha", resistenza_operativa)
 
 st.markdown("---")
-st.subheader(f"🔮 Segnale Live ({'INVERTITO - Anti-IA' if modalita_inversa else 'Standard'})")
+st.subheader(f"🔮 Segnale Live (IA Pura: {segnalo_ia_str} ➡️ Eseguiamo: {direzione_effettiva_str})")
 
 c_pred1, c_pred2 = st.columns(2)
 with c_pred1:
-    if direzione_live_str == "LONG":
-        st.success(f"SEGNALE LIVE: LONG 🟢 ({'IA diceva SHORT' if modalita_inversa else 'IA diceva LONG'})")
+    if direzione_effettiva_str == "LONG":
+        st.success(f"OPERAZIONE A MERCATO: LONG 🟢 (L'IA diceva {segnalo_ia_str})")
     else:
-        st.error(f"SEGNALE LIVE: SHORT 🔴 ({'IA diceva LONG' if modalita_inversa else 'IA diceva SHORT'})")
+        st.error(f"OPERAZIONE A MERCATO: SHORT 🔴 (L'IA diceva {segnalo_ia_str})")
 
 with c_pred2:
     st.metric("Confidenza IA", f"{confidenza_ia:.1f}%")
     st.metric("Rischio Profilo", f"{pct_rischio*100:.0f}% ({euro_da_rischiare:.2f} €)")
 
 # ==========================================
-# 3. BACKTEST STORICO CON OPZIONE DI INVERSIONE
+# 3. BACKTEST STORICO CON SEPARAZIONE IA / OPERAZIONE
 # ==========================================
 st.markdown("---")
 st.subheader("📊 Backtest Storico (Ultimi 6 Mesi con Costi Fissi)")
@@ -174,14 +182,17 @@ def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_
             continue
             
         prob = modello.predict_proba(riga_corr)[0]
-        pred = modello.predict(riga_corr)[0]
-        conf = prob[pred] * 100
+        pred_ia_nativo = modello.predict(riga_corr)[0]
+        conf = prob[pred_ia_nativo] * 100
         
         if conf < conf_minima:
             continue
             
+        # Determiniamo l'operazione effettiva in base al flag di inversione
         if inverti:
-            pred = 0 if pred == 1 else 1
+            op_eseguita = 0 if pred_ia_nativo == 1 else 1
+        else:
+            op_eseguita = pred_ia_nativo
             
         data_trade = test_df.index[i].date()
         open_oggi = test_df['Open'].iloc[i]
@@ -192,7 +203,7 @@ def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_
         if atr_giornaliero <= 0:
             continue
             
-        if pred == 1: # LONG
+        if op_eseguita == 1: # LONG Effettivo
             rischio = atr_giornaliero * 0.5
             reward = atr_giornaliero * 1.0
             if high_oggi >= open_oggi + reward:
@@ -201,7 +212,7 @@ def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_
             else:
                 pnl = -rischio - attrito
                 esito = "LOSS"
-        else: # SHORT
+        else: # SHORT Effettivo
             rischio = atr_giornaliero * 0.5
             reward = atr_giornaliero * 1.0
             if low_oggi <= open_oggi - reward:
@@ -213,7 +224,14 @@ def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_
                 
         capitale_corrente += pnl
         equity.append(capitale_corrente)
-        trade_log.append({"Data": str(data_trade), "Direzione": "LONG" if pred==1 else "SHORT", "Esito": esito, "PnL": round(pnl, 2), "Equity": round(capitale_corrente, 2)})
+        trade_log.append({
+            "Data": str(data_trade), 
+            "Segnale IA": "LONG" if pred_ia_nativo==1 else "SHORT",
+            "Eseguito": "LONG" if op_eseguita==1 else "SHORT", 
+            "Esito": esito, 
+            "PnL": round(pnl, 2), 
+            "Equity": round(capitale_corrente, 2)
+        })
         
     return pd.DataFrame(trade_log), equity
 
