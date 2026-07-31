@@ -3,184 +3,240 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import requests
+from sklearn.ensemble import RandomForestClassifier
 
-# ==========================================
-# 1. CONFIGURAZIONE TELEGRAM & PAGINA
-# ==========================================
-TELEGRAM_TOKEN = "INSERISCI_QUI_IL_TUO_TOKEN"
-TELEGRAM_CHAT_ID = "INSERISCI_QUI_IL_TUO_CHAT_ID"
+# --- CONFIGURAZIONE INTERFACCIA ---
+st.set_page_config(page_title="V-Alpha PRO | Knockout Trading AI", layout="wide")
 
-def invia_notifica_telegram(messaggio):
-    if TELEGRAM_TOKEN == "INSERISCI_QUI_IL_TUO_TOKEN":
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": messaggio,
-        "parse_mode": "Markdown"
-    }
-    try:
-        requests.post(url, json=payload, timeout=5)
-    except Exception:
-        pass
-
-st.set_page_config(page_title="Nasdaq ORB Engine - Knockout Fineco", layout="wide", page_icon="📈")
-st.markdown("<h1 style='text-align: center; color: #2E8B57;'>📈 NASDAQ 100 - OPENING RANGE BREAKOUT (FHB)</h1>", unsafe_allow_html=True)
-st.markdown("<h4 style='text-align: center; color: #888;'>Strategia Meccanica a Bassa Frequenza per Certificati Knock Out</h4>", unsafe_allow_html=True)
+st.title("🤖 V-Alpha PRO | Random Forest AI (Knockout Edition)")
 st.markdown("---")
 
-# ==========================================
-# 2. DOWNLOAD DATI NASDAQ (QQQ o NQ=F)
-# ==========================================
+# --- 1. MOTORE ADDESTRAMENTO RANDOM FOREST (DAILY) ---
 @st.cache_data(ttl=3600)
-def carica_dati_nasdaq():
+def addestra_modello_ia(ticker):
     try:
-        df = yf.download("QQQ", period="6mo", interval="1h", auto_adjust=True, progress=False)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        if df.empty or 'Close' not in df.columns: 
-            return pd.DataFrame()
-        return df.dropna()
-    except Exception:
-        return pd.DataFrame()
+        dati = yf.download(ticker, period="3y", interval="1d", auto_adjust=True, progress=False)
+        if isinstance(dati.columns, pd.MultiIndex):
+            dati.columns = dati.columns.get_level_values(0)
+            
+        if dati.empty or len(dati) < 100:
+            return None, None, None
 
-df_base = carica_dati_nasdaq()
+        dati['Ritorno_Prezzo'] = dati['Close'].pct_change()
+        dati['Media_20'] = dati['Close'].rolling(window=20).mean()
+        dati['Media_50'] = dati['Close'].rolling(window=50).mean()
+        dati['Target'] = np.where(dati['Close'].shift(-1) > dati['Close'], 1, 0)
 
-if df_base.empty:
-    st.error("⚠️ Impossibile scaricare i dati da Yahoo Finance. Riprova tra poco.")
+        delta = dati['Close'].diff()
+        guadagno = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        perdita = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = guadagno / perdita
+        dati['RSI'] = 100 - (100 / (1 + rs))
+
+        std20 = dati['Close'].rolling(window=20).std()
+        dati['Banda_Alta'] = dati['Media_20'] + (std20 * 2)
+        dati['Banda_Bassa'] = dati['Media_20'] - (std20 * 2)
+        dati['Dist_Media20'] = (dati['Close'] - dati['Media_20']) / dati['Media_20']
+        dati['Dist_Media50'] = (dati['Close'] - dati['Media_50']) / dati['Media_50']
+        dati['Larghezza_Bande'] = (dati['Banda_Alta'] - dati['Banda_Bassa']) / dati['Media_20']
+
+        k = dati['Close'].ewm(span=12, adjust=False).mean()
+        d = dati['Close'].ewm(span=26, adjust=False).mean()
+        dati['MACD'] = k - d
+        dati['MACD_Signal'] = dati['MACD'].ewm(span=9, adjust=False).mean()
+        dati['MACD_Hist'] = dati['MACD'] - dati['MACD_Signal']
+
+        variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
+                     'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
+
+        dati_training = dati.dropna(subset=variabili + ['Target'])
+        
+        X = dati_training[variabili]
+        y = dati_training['Target']
+
+        modello = RandomForestClassifier(n_estimators=150, min_samples_leaf=5, random_state=42)
+        modello.fit(X, y)
+
+        ultimo_dato_fresco = dati[variabili].iloc[-1:]
+
+        return modello, ultimo_dato_fresco, dati
+
+    except Exception as e:
+        st.error(f"Errore nell'addestramento IA: {e}")
+        return None, None, None
+
+# --- 2. SCARICAMENTO DATI LIVE INTRADAY ---
+@st.cache_data(ttl=60)
+def carica_dati_intraday():
+    for ticker in ["CL=F", "BZ=F", "USOIL=X"]:
+        try:
+            df = yf.download(ticker, period="2d", interval="5m", auto_adjust=True, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            if not df.empty and 'Close' in df.columns:
+                return df, ticker
+        except Exception:
+            continue
+    return None, None
+
+df_5m, ticker_attivo = carica_dati_intraday()
+
+if df_5m is None:
+    st.error("⚠️ Connessione ai dati di mercato non disponibile.")
     st.stop()
 
-# ==========================================
-# 3. PANNELLO LATERALE: MONEY MANAGEMENT
-# ==========================================
-st.sidebar.markdown("### ⚖️ Parametri di Rischio Knockout")
-capitale_iniziale = st.sidebar.number_input("Capitale Iniziale (€):", value=1500.0, step=100.0)
+modello_rf, ultimo_dato_ia, df_storico_completo = addestra_modello_ia(ticker_attivo)
+
+if modello_rf is None:
+    st.error("⚠️ Errore nell'inizializzazione del modello IA.")
+    st.stop()
+
+# PREDIZIONE IA PURA LIVE
+probabilita = modello_rf.predict_proba(ultimo_dato_ia)[0]
+predizione_ia = modello_rf.predict(ultimo_dato_ia)[0]
+confidenza_ia = probabilita[predizione_ia] * 100
+
+prezzo_live = round(float(df_5m['Close'].iloc[-1]), 3)
+oggi = df_5m.index[-1].date()
+df_today = df_5m[df_5m.index.date == oggi]
+if df_today.empty:
+    df_today = df_5m.tail(50)
+
+high_mattina = float(df_today['High'].max())
+low_mattina = float(df_today['Low'].min())
+range_totale = high_mattina - low_mattina
+supporto_operativo = round(low_mattina + (range_totale * 0.2), 3)
+resistenza_operativa = round(high_mattina - (range_totale * 0.2), 3)
+atr = round(range_totale / 5, 3)
+
+# --- PANNELLO LATERALE ---
+st.sidebar.header("💰 Gestione Capitale & Costi")
+capitale_utente = st.sidebar.number_input("Capitale Iniziale (€):", value=1500.0, step=100.0)
 costo_attrito = st.sidebar.number_input("Costi Fissi (Comm. + Spread €):", value=12.0, step=1.0)
-moltiplicatore_tp = st.sidebar.slider("Rapporto Take Profit / Rischio (RR):", 1.0, 3.0, 1.5, 0.5)
+soglia_filtro = st.sidebar.slider("Soglia Confidenza Minima IA (%):", 50.0, 75.0, 55.0, 1.0)
+
+if confidenza_ia < 55:
+    pct_rischio = 0.01
+elif confidenza_ia < 65:
+    pct_rischio = 0.02
+else:
+    pct_rischio = 0.03
+
+euro_da_rischiare = capitale_utente * pct_rischio
+
+# --- METRICHE LIVE ---
+st.markdown(f"**Asset Monitorato:** `{ticker_attivo}` | Aggiornato in tempo reale")
+col1, col2, col3 = st.columns(3)
+col1.metric("Supporto V-Alpha", supporto_operativo)
+col2.metric("Prezzo WTI Live", prezzo_live)
+col3.metric("Resistenza V-Alpha", resistenza_operativa)
+
+st.markdown("---")
+st.subheader("🔮 Segnale Random Forest AI (Live)")
+
+c_pred1, c_pred2 = st.columns(2)
+with c_pred1:
+    if predizione_ia == 1:
+        st.success("PREDIZIONE IA: LONG 🟢")
+        direzione = "LONG"
+        livello_ingresso = supporto_operativo
+        take_profit = round(supporto_operativo + (atr * 2.0), 3)
+        stop_loss = round(low_mattina - (atr * 0.2), 3)
+    else:
+        st.error("PREDIZIONE IA: SHORT 🔴")
+        direzione = "SHORT"
+        livello_ingresso = resistenza_operativa
+        take_profit = round(resistenza_operativa - (atr * 2.0), 3)
+        stop_loss = round(high_mattina + (atr * 0.2), 3)
+
+with c_pred2:
+    st.metric("Confidenza IA", f"{confidenza_ia:.1f}%")
+    st.metric("Rischio Profilo", f"{pct_rischio*100:.0f}% ({euro_da_rischiare:.2f} €)")
 
 # ==========================================
-# 4. MOTORE DI BACKTEST MECCANICO (FHB)
+# 3. AGGIUNTA: BACKTEST STORICO DEGLI ULTIMI 6 MESI
 # ==========================================
-def esegui_backtest_fhb(df, capitale, attrito, rr_target):
-    equity = [capitale]
+st.markdown("---")
+st.subheader("📊 Backtest Storico (Ultimi 6 Mesi con Costi Fissi)")
+
+def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_minima):
+    equity = [capitale_iniziale]
     trade_log = []
+    capitale_corrente = capitale_iniziale
     
-    df = df.copy()
-    if not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.to_datetime(df.index)
-        
-    df['Date'] = df.index.date
-    giorni = df['Date'].unique()
+    # Prendiamo gli ultimi 6 mesi circa (126 sessioni borsistiche)
+    test_df = dati_completi.tail(126).copy()
     
-    capitale_corrente = capitale
+    variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
+                 'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
     
-    for giorno in giorni:
-        df_giorno = df[df['Date'] == giorno]
-        if len(df_giorno) < 3: 
+    for i in range(1, len(test_df)):
+        riga_corr = test_df.iloc[i-1:i][variabili]
+        if riga_corr.isna().any().any():
             continue
             
-        candela_apertura = df_giorno.iloc[0]
-        high_or = candela_apertura['High']
-        low_or = candela_apertura['Low']
-        ampiezza_or = high_or - low_or
+        prob = modello.predict_proba(riga_corr)[0]
+        pred = modello.predict(riga_corr)[0]
+        conf = prob[pred] * 100
         
-        if ampiezza_or <= 0:
+        if conf < conf_minima:
+            continue # Salta se la confidenza è bassa
+            
+        data_trade = test_df.index[i].date()
+        open_oggi = test_df['Open'].iloc[i]
+        high_oggi = test_df['High'].iloc[i]
+        low_oggi = test_df['Low'].iloc[i]
+        close_oggi = test_df['Close'].iloc[i]
+        
+        # Simulazione semplificata basata su ATR o escursione giornaliera
+        atr_giornaliero = high_oggi - low_oggi
+        if atr_giornaliero <= 0:
             continue
             
-        resto_giornata = df_giorno.iloc[1:]
+        if pred == 1: # LONG
+            rischio = atr_giornaliero * 0.5
+            reward = atr_giornaliero * 1.0
+            # Verifichiamo se il mercato prende prima il target o lo stop
+            if high_oggi >= open_oggi + reward:
+                pnl = reward - attrito
+                esito = "WIN"
+            else:
+                pnl = -rischio - attrito
+                esito = "LOSS"
+        else: # SHORT
+            rischio = atr_giornaliero * 0.5
+            reward = atr_giornaliero * 1.0
+            if low_oggi <= open_oggi - reward:
+                pnl = reward - attrito
+                esito = "WIN"
+            else:
+                pnl = -rischio - attrito
+                esito = "LOSS"
+                
+        capitale_corrente += pnl
+        equity.append(capitale_corrente)
+        trade_log.append({"Data": str(data_trade), "Direzione": "LONG" if pred==1 else "SHORT", "Esito": esito, "PnL": round(pnl, 2), "Equity": round(capitale_corrente, 2)})
         
-        pos_aperta = False
-        for idx, row in resto_giornata.iterrows():
-            if pos_aperta:
-                break
-                
-            h = row['High']
-            l = row['Low']
-            
-            if h >= high_or:
-                pos_aperta = True
-                entry_price = high_or
-                stop_loss = low_or
-                rischio_pt = entry_price - stop_loss
-                tp_price = entry_price + (rischio_pt * rr_target)
-                tp_pt = tp_price - entry_price
-                
-                esito = "LOSS"
-                pnl_netto = -rischio_pt - attrito
-                
-                future_subset = resto_giornata.loc[idx:]
-                for _, sub_row in future_subset.iterrows():
-                    if sub_row['Low'] <= stop_loss:
-                        esito = "LOSS"
-                        pnl_netto = -rischio_pt - attrito
-                        break
-                    elif sub_row['High'] >= tp_price:
-                        esito = "WIN"
-                        pnl_netto = tp_pt - attrito
-                        break
-                
-                capitale_corrente += pnl_netto
-                equity.append(capitale_corrente)
-                trade_log.append({"Data": str(giorno), "Direzione": "LONG", "Esito": esito, "PnL": pnl_netto, "Equity": capitale_corrente})
-                
-            elif l <= low_or:
-                pos_aperta = True
-                entry_price = low_or
-                stop_loss = high_or
-                rischio_pt = stop_loss - entry_price
-                tp_price = entry_price - (rischio_pt * rr_target)
-                tp_pt = entry_price - tp_price
-                
-                esito = "LOSS"
-                pnl_netto = -rischio_pt - attrito
-                
-                future_subset = resto_giornata.loc[idx:]
-                for _, sub_row in future_subset.iterrows():
-                    if sub_row['High'] >= stop_loss:
-                        esito = "LOSS"
-                        pnl_netto = -rischio_pt - attrito
-                        break
-                    elif sub_row['Low'] <= tp_price:
-                        esito = "WIN"
-                        pnl_netto = tp_pt - attrito
-                        break
-                
-                capitale_corrente += pnl_netto
-                equity.append(capitale_corrente)
-                trade_log.append({"Data": str(giorno), "Direzione": "SHORT", "Esito": esito, "PnL": pnl_netto, "Equity": capitale_corrente})
-                
     return pd.DataFrame(trade_log), equity
 
-df_trades, curva_equity = esegui_backtest_fhb(df_base, capitale_iniziale, costo_attrito, moltiplicatore_tp)
-
-# ==========================================
-# 5. DASHBOARD RISULTATI
-# ==========================================
-if not df_trades.empty:
-    tot_trade = len(df_trades)
-    vinti = len(df_trades[df_trades['Esito'] == "WIN"])
-    win_rate = (vinti / tot_trade) * 100 if tot_trade > 0 else 0
+if df_storico_completo is not None:
+    df_res_bt, eq_bt = esegui_backtest_rf(df_storico_completo, modello_rf, capitale_utente, costo_attrito, soglia_filtro)
     
-    lordo_profitti = df_trades[df_trades['PnL'] > 0]['PnL'].sum()
-    lordo_perdite = abs(df_trades[df_trades['PnL'] < 0]['PnL'].sum())
-    profit_factor = lordo_profitti / lordo_perdite if lordo_perdite > 0 else 0.0
-    
-    arr_eq = np.array(curva_equity)
-    peak = np.maximum.accumulate(arr_eq)
-    max_dd = np.max(peak - arr_eq) if len(arr_eq) > 0 else 0
-    
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Trade Totali (6 Mesi)", tot_trade)
-    c2.metric("Win Rate Meccanico", f"{win_rate:.1f}%")
-    c3.metric("Profit Factor", f"{profit_factor:.2f}")
-    c4.metric("Max Drawdown", f"-{max_dd:.2f} €")
-    c5.metric("Profitto Netto", f"{curva_equity[-1] - capitale_iniziale:.2f} €")
-    
-    st.markdown("### 📈 Curva di Equity - Strategia Meccanica ORB")
-    st.line_chart(curva_equity)
-    
-    with st.expander("🔍 Dettaglio Storico Operazioni"):
-        st.dataframe(df_trades)
-else:
-    st.warning("⚠️ Nessun trade generato con i parametri attuali.")
+    if not df_res_bt.empty:
+        tot_t = len(df_res_bt)
+        vinti_t = len(df_res_bt[df_res_bt['Esito'] == "WIN"])
+        wr_t = (vinti_t / tot_t) * 100
+        net_profit = eq_bt[-1] - capitale_utente
+        
+        bt_c1, bt_c2, bt_c3, bt_c4 = st.columns(4)
+        bt_c1.metric("Trade Effettuati", tot_t)
+        bt_c2.metric("Win Rate Storico", f"{wr_t:.1f}%")
+        bt_c3.metric("Profitto Netto", f"{net_profit:.2f} €")
+        bt_c4.metric("Capitale Finale", f"{eq_bt[-1]:.2f} €")
+        
+        st.line_chart(eq_bt)
+        
+        with st.expander("🔍 Vedi Storico Operazioni Backtest"):
+            st.dataframe(df_res_bt)
+    else:
+        st.warning("⚠️ Nessun trade generato con la soglia di confidenza attuale.")
