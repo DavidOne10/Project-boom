@@ -6,12 +6,12 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
 # --- CONFIGURAZIONE INTERFACCIA ---
-st.set_page_config(page_title="V-Alpha PRO | Walk-Forward OOS", layout="wide")
+st.set_page_config(page_title="V-Alpha PRO | Regularized RF Walk-Forward", layout="wide")
 
-st.title("🤖 V-Alpha PRO | Walk-Forward Optimization (Out-of-Sample)")
+st.title("🤖 V-Alpha PRO | Random Forest Regolarizzato (Anti-Overfitting)")
 st.markdown("---")
 
-# --- 1. FUNZIONE DI ADDESTRAMENTO DINAMICO (WALK-FORWARD) ---
+# --- 1. FUNZIONE DI ADDESTRAMENTO CON REGOLARIZZAZIONE FORTE ---
 @st.cache_data(ttl=3600)
 def scarica_dati_base(ticker):
     try:
@@ -72,11 +72,18 @@ st.sidebar.markdown("---")
 st.sidebar.header("🔄 Modalità Operativa")
 modalita_inversa = st.sidebar.checkbox("Attiva 'Anti-IA Mode' (Inverti Segnali)", value=True)
 
-# Addestriamo il modello sull'ultimo blocco per il segnale live odierno
+# Variabili e Modello Regolarizzato per il Live
 variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
              'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
 
-modello_live = RandomForestClassifier(n_estimators=150, min_samples_leaf=5, random_state=42)
+# Parametri anti-overfitting severi: max_depth basso e min_samples alti
+modello_live = RandomForestClassifier(
+    n_estimators=50, 
+    max_depth=3, 
+    min_samples_split=40, 
+    min_samples_leaf=25, 
+    random_state=42
+)
 modello_live.fit(df_storico[variabili].iloc[:-1], df_storico['Target'].iloc[:-1])
 
 ultimo_dato = df_storico[variabili].iloc[[-1]]
@@ -100,20 +107,19 @@ with col1:
 
 with col2:
     st.metric("Prezzo WTI Odierno", prezzo_live)
-    st.metric("Confidenza IA (OOS)", f"{confidenza_ia:.1f}%")
+    st.metric("Confidenza IA (Regolarizzata)", f"{confidenza_ia:.1f}%")
 
 # ==========================================
-# 2. BACKTEST WALK-FORWARD (OUT-OF-SAMPLE)
+# 2. BACKTEST WALK-FORWARD CON MODELLO POTATO
 # ==========================================
 st.markdown("---")
-st.subheader("📊 Backtest Walk-Forward (Rilevamento Overfitting Out-of-Sample)")
+st.subheader("📊 Backtest Walk-Forward (Modello Regolarizzato OOS)")
 
-def esegui_walk_forward(dati, capitale_iniziale, attrito, conf_minima, inverti, lotto):
+def esegui_walk_forward_rigido(dati, capitale_iniziale, attrito, conf_minima, inverti, lotto):
     equity = [capitale_iniziale]
     trade_log = []
     capitale_corrente = capitale_iniziale
     
-    # Prendiamo gli ultimi 126 giorni (circa 6 mesi) da testare fuori campione
     finestra_test = 126
     punto_inizio = len(dati) - finestra_test
     
@@ -121,16 +127,21 @@ def esegui_walk_forward(dati, capitale_iniziale, attrito, conf_minima, inverti, 
                  'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
     
     for i in range(punto_inizio, len(dati) - 1):
-        # Alleniamo il modello SOLO sui dati passati disponibili fino al giorno prima del trade
         dati_train = dati.iloc[:i]
         
         X_train = dati_train[variabili]
         y_train = dati_train['Target']
         
-        modello_wf = RandomForestClassifier(n_estimators=100, min_samples_leaf=5, random_state=42)
+        # Modello con vincoli severi per impedire la memorizzazione del passato
+        modello_wf = RandomForestClassifier(
+            n_estimators=50, 
+            max_depth=3, 
+            min_samples_split=40, 
+            min_samples_leaf=25, 
+            random_state=42
+        )
         modello_wf.fit(X_train, y_train)
         
-        # Testiamo rigorosamente sul giorno successivo (Out-of-Sample puro)
         riga_test = dati.iloc[i:i+1][variabili]
         prob = modello_wf.predict_proba(riga_test)[0]
         pred_ia = modello_wf.predict(riga_test)[0]
@@ -170,7 +181,7 @@ def esegui_walk_forward(dati, capitale_iniziale, attrito, conf_minima, inverti, 
     return pd.DataFrame(trade_log), equity
 
 if df_storico is not None:
-    df_res_wf, eq_wf = esegui_walk_forward(df_storico, capitale_utente, costo_attrito, soglia_filtro, modalita_inversa, dimensione_lotto)
+    df_res_wf, eq_wf = esegui_walk_forward_rigido(df_storico, capitale_utente, costo_attrito, soglia_filtro, modalita_inversa, dimensione_lotto)
     
     if not df_res_wf.empty:
         tot_t = len(df_res_wf)
@@ -180,13 +191,13 @@ if df_storico is not None:
         
         wf_c1, wf_c2, wf_c3, wf_c4 = st.columns(4)
         wf_c1.metric("Trade OOS Effettuati", tot_t)
-        wf_c2.metric("Win Rate Out-of-Sample", f"{wr_t:.1f}%")
+        wf_c2.metric("Win Rate Regolarizzato", f"{wr_t:.1f}%")
         wf_c3.metric("Profitto Netto OOS", f"{net_profit:.2f} €")
         wf_c4.metric("Capitale Finale OOS", f"{eq_wf[-1]:.2f} €")
         
         st.line_chart(eq_wf)
         
-        with st.expander("🔍 Vedi Storico Dettagliato Walk-Forward"):
+        with st.expander("🔍 Vedi Storico Dettagliato Walk-Forward Regolarizzato"):
             st.dataframe(df_res_wf)
     else:
         st.warning("⚠️ Nessun trade generato con la soglia di confidenza attuale.")
