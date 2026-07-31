@@ -6,9 +6,9 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
 # --- CONFIGURAZIONE INTERFACCIA ---
-st.set_page_config(page_title="V-Alpha PRO | S&P 500 Intraday", layout="wide", page_icon="📈")
+st.set_page_config(page_title="V-Alpha PRO | Analisi Forense Trade", layout="wide", page_icon="📈")
 
-st.title("🤖 V-Alpha PRO | S&P 500 Intraday Control Center")
+st.title("🤖 V-Alpha PRO | Analisi & Ottimizzazione Intraday")
 st.markdown("---")
 
 TICKER = "^GSPC"  # S&P 500
@@ -27,7 +27,6 @@ def scarica_e_prepara_dati(ticker):
         dati['Ritorno_Prezzo'] = dati['Close'].pct_change()
         dati['Media_20'] = dati['Close'].rolling(window=20).mean()
         dati['Media_50'] = dati['Close'].rolling(window=50).mean()
-        # Il target prevede la direzione della seduta stessa (Close vs Open o Close rispetto a ieri)
         dati['Target'] = np.where(dati['Close'] > dati['Open'], 1, 0)
 
         delta = dati['Close'].diff()
@@ -69,15 +68,15 @@ with st.sidebar.expander("💰 Capitale & Costi", expanded=True):
 
 with st.sidebar.expander("🛡️ Stop Loss & Take Profit (Stretta Intraday)", expanded=True):
     attiva_sl_tp = st.checkbox("Attiva SL / TP Intraday", value=True)
-    pct_sl = st.slider("Stop Loss (%)", 0.2, 1.5, 0.8, 0.1) / 100.0  # Rischio ridotto per intraday
+    pct_sl = st.slider("Stop Loss (%)", 0.2, 1.5, 0.8, 0.1) / 100.0
     pct_tp = st.slider("Take Profit (%)", 0.5, 3.0, 1.5, 0.1) / 100.0
 
 with st.sidebar.expander("🔄 Filtri IA", expanded=True):
     soglia_filtro = st.slider("Confidenza Minima IA (%):", 50.0, 75.0, 55.0, 1.0)
     modalita_inversa = st.checkbox("Attiva 'Anti-IA Mode'", value=True)
 
-# --- MOTORE BACKTEST 100% INTRADAY ---
-def esegui_walk_forward_intraday(dati, capitale_iniziale, spread, conf_minima, inverti, lotto, usa_sltp, sl_val, tp_val):
+# --- MOTORE BACKTEST CON LOGGING INDICATORI ---
+def esegui_walk_forward_intraday_analitico(dati, capitale_iniziale, spread, conf_minima, inverti, lotto, usa_sltp, sl_val, tp_val):
     equity = [capitale_iniziale]
     trade_log = []
     capitale_corrente = capitale_iniziale
@@ -98,7 +97,6 @@ def esegui_walk_forward_intraday(dati, capitale_iniziale, spread, conf_minima, i
         )
         modello_wf.fit(X_train, y_train)
         
-        # Test basato sulla chiusura di ieri per operare oggi
         riga_test = dati.iloc[i-1:i][variabili]
         prob = modello_wf.predict_proba(riga_test)[0]
         pred_ia = modello_wf.predict(riga_test)[0]
@@ -113,10 +111,11 @@ def esegui_walk_forward_intraday(dati, capitale_iniziale, spread, conf_minima, i
             op_eseguita = pred_ia
             
         data_trade = dati.index[i].date()
-        prezzo_entrata = dati['Open'].iloc[i]  # Entrata all'apertura della seduta
+        prezzo_entrata = dati['Open'].iloc[i]
         high_giorno = dati['High'].iloc[i]
         low_giorno = dati['Low'].iloc[i]
         prezzo_chiusura = dati['Close'].iloc[i]
+        rsi_attuale = dati['RSI'].iloc[i-1]
         
         prezzo_uscita = prezzo_chiusura
         esito_uscita = "CLOSE"
@@ -156,13 +155,15 @@ def esegui_walk_forward_intraday(dati, capitale_iniziale, spread, conf_minima, i
             "Eseguito": "LONG" if op_eseguita == 1 else "SHORT",
             "Uscita per": esito_uscita,
             "Esito": esito,
+            "Confidenza (%)": round(conf, 1),
+            "RSI Ingresso": round(rsi_attuale, 1),
             "PnL (€)": round(pnl_netto, 2),
             "Capitale (€)": round(capitale_corrente, 2)
         })
         
     return pd.DataFrame(trade_log), equity
 
-# Calcolo modello live intraday per oggi
+# Calcolo modello live intraday
 variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
              'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
 
@@ -176,6 +177,7 @@ prob_live = modello_live.predict_proba(ultimo_dato)[0]
 pred_live_nativa = modello_live.predict(ultimo_dato)[0]
 confidenza_ia = prob_live[pred_live_nativa] * 100
 prezzo_riferimento = round(float(df_storico['Close'].iloc[-1]), 2)
+rsi_live = round(float(df_storico['RSI'].iloc[-1]), 1)
 
 segnalo_ia_str = "LONG" if pred_live_nativa == 1 else "SHORT"
 op_live = 0 if (pred_live_nativa == 1 and modalita_inversa) or (pred_live_nativa == 0 and not modalita_inversa) else 1
@@ -188,12 +190,12 @@ else:
     sl_live_val = prezzo_riferimento * (1 + pct_sl)
     tp_live_val = prezzo_riferimento * (1 - pct_tp)
 
-df_res, eq_res = esegui_walk_forward_intraday(
+df_res, eq_res = esegui_walk_forward_intraday_analitico(
     df_storico, capitale_utente, spread_cost, soglia_filtro, modalita_inversa, dimensione_lotto, attiva_sl_tp, pct_sl, pct_tp
 )
 
 # --- STRUTTURA A SCHEDE ---
-tab_live, tab_backtest, tab_storico = st.tabs(["🎯 Segnale Intraday Live", "📊 Analisi & Performance", "📋 Storico Dettagliato"])
+tab_live, tab_diagnostica, tab_storico = st.tabs(["🎯 Segnale Intraday Live", "🔬 Diagnostica & Filtri (Perchè perdiamo?)", "📋 Storico Dettagliato"])
 
 with tab_live:
     st.subheader("Verdetto Operativo Intraday")
@@ -207,39 +209,46 @@ with tab_live:
 
     with col_l2:
         st.metric("Ultimo Prezzo Chiusura", prezzo_riferimento)
-        st.metric("Confidenza IA", f"{confidenza_ia:.1f}%")
+        st.metric("Confidenza IA / RSI Live", f"{confidenza_ia:.1f}% / RSI: {rsi_live}")
         
     st.markdown("---")
-    st.subheader("🛠️ Parametri Knock-Out Intraday (Stretti)")
+    st.subheader("🛠️ Parametri Knock-Out Intraday")
     
     col_p1, col_p2, col_p3 = st.columns(3)
     col_p1.metric("Riferimento Ingresso", f"{prezzo_riferimento}")
     col_p2.metric("Stop Loss Intraday", f"{sl_live_val:.2f}", delta=f"-{pct_sl*100}%", delta_color="inverse")
     col_p3.metric("Take Profit Intraday", f"{tp_live_val:.2f}", delta=f"+{pct_tp*100}%", delta_color="normal")
-    
-    st.info("💡 **Regola Intraday:** Apri la posizione all'apertura e chiudila tassativamente in giornata. Nessun mantenimento overnight.")
 
-with tab_backtest:
-    st.subheader("Performance Storica Intraday (OOS)")
+with tab_diagnostica:
+    st.subheader("🔍 Anatomia dei Trade: Vincenti vs Perdenti")
     if not df_res.empty:
-        tot_t = len(df_res)
-        vinti_t = len(df_res[df_res['Esito'] == "WIN"])
-        wr_t = (vinti_t / tot_t) * 100
-        net_profit = eq_res[-1] - capitale_utente
+        vinti_df = df_res[df_res['Esito'] == "WIN"]
+        persi_df = df_res[df_res['Esito'] == "LOSS"]
         
-        wf_c1, wf_c2, wf_c3, wf_c4 = st.columns(4)
-        wf_c1.metric("Trade Effettuati", tot_t)
-        wf_c2.metric("Win Rate Reale", f"{wr_t:.1f}%")
-        wf_c3.metric("Profitto Netto OOS", f"{net_profit:.2f} €")
-        wf_c4.metric("Capitale Finale", f"{eq_res[-1]:.2f} €")
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Trade Vincenti", len(vinti_df))
+        d2.metric("Trade Perdenti", len(persi_df))
+        d3.metric("Confidenza Media (WIN)", f"{vinti_df['Confidenza (%)'].mean():.1f}%" if len(vinti_df)>0 else "N/D")
+        d4.metric("Confidenza Media (LOSS)", f"{persi_df['Confidenza (%)'].mean():.1f}%" if len(persi_df)>0 else "N/D")
+        
+        st.markdown("---")
+        st.markdown("#### 📊 Confronto RSI medio all'ingresso")
+        r_win = vinti_df['RSI Ingresso'].mean() if len(vinti_df)>0 else 0
+        r_loss = persi_df['RSI Ingresso'].mean() if len(persi_df)>0 else 0
+        
+        col_r1, col_r2 = st.columns(2)
+        col_r1.metric("RSI Medio sui Trade Vincenti", f"{r_win:.1f}")
+        col_r2.metric("RSI Medio sui Trade Perdenti", f"{r_loss:.1f}")
+        
+        st.info("💡 **Come interpretarlo:** Se noti che i trade perdenti si concentrano quando la confidenza dell'IA è vicina al limite minimo o quando l'RSI è in area neutra (intorno a 50), puoi stringere la soglia di confidenza nella barra laterale per filtrarli via automaticamente!")
         
         st.markdown("#### Curva Equity Intraday")
         st.line_chart(eq_res)
     else:
-        st.warning("⚠️ Nessun trade generato con i parametri attuali.")
+        st.warning("⚠️ Nessun dato diagnostico disponibile.")
 
 with tab_storico:
-    st.subheader("Registro Completo delle Operazioni Intraday")
+    st.subheader("Registro Completo con Dettagli Tecnici")
     if not df_res.empty:
         st.dataframe(df_res, use_container_width=True)
     else:
