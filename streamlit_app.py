@@ -36,7 +36,6 @@ st.markdown("---")
 @st.cache_data(ttl=3600)
 def carica_dati_nasdaq():
     try:
-        # Usiamo QQQ (ETF Nasdaq 100) o NQ=F per dati orari puliti
         df = yf.download("QQQ", period="6mo", interval="1h", auto_adjust=True, progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
@@ -58,7 +57,7 @@ if df_base.empty:
 st.sidebar.markdown("### ⚖️ Parametri di Rischio Knockout")
 capitale_iniziale = st.sidebar.number_input("Capitale Iniziale (€):", value=1500.0, step=100.0)
 costo_attrito = st.sidebar.number_input("Costi Fissi (Comm. + Spread €):", value=12.0, step=1.0)
- moltiplicatore_tp = st.sidebar.slider("Rapporto Take Profit / Rischio (RR):", 1.0, 3.0, 1.5, 0.5)
+moltiplicatore_tp = st.sidebar.slider("Rapporto Take Profit / Rischio (RR):", 1.0, 3.0, 1.5, 0.5)
 
 # ==========================================
 # 4. MOTORE DI BACKTEST MECCANICO (FHB)
@@ -67,12 +66,10 @@ def esegui_backtest_fhb(df, capitale, attrito, rr_target):
     equity = [capitale]
     trade_log = []
     
-    # Assicuriamoci che l'indice sia datetime
     df = df.copy()
     if not isinstance(df.index, pd.DatetimeIndex):
         df.index = pd.to_datetime(df.index)
         
-    # Raggruppiamo per giorno solare per identificare la prima candela della sessione
     df['Date'] = df.index.date
     giorni = df['Date'].unique()
     
@@ -81,9 +78,8 @@ def esegui_backtest_fhb(df, capitale, attrito, rr_target):
     for giorno in giorni:
         df_giorno = df[df['Date'] == giorno]
         if len(df_giorno) < 3: 
-            continue # Serve una seduta con abbastanza candele orarie
+            continue
             
-        # La prima candela della giornata fa da "Range di Apertura"
         candela_apertura = df_giorno.iloc[0]
         high_or = candela_apertura['High']
         low_or = candela_apertura['Low']
@@ -92,32 +88,27 @@ def esegui_backtest_fhb(df, capitale, attrito, rr_target):
         if ampiezza_or <= 0:
             continue
             
-        # Analizziamo le candele successive nella stessa giornata per il breakout
         resto_giornata = df_giorno.iloc[1:]
         
         pos_aperta = False
         for idx, row in resto_giornata.iterrows():
             if pos_aperta:
-                break # Un solo trade al giorno per evitare overtrading
+                break
                 
             h = row['High']
             l = row['Low']
-            c = row['Close']
             
-            # Condizione LONG: Prezzo rompe il massimo della prima ora
             if h >= high_or:
                 pos_aperta = True
                 entry_price = high_or
-                stop_loss = low_or # Rischio = ampiezza della prima candela
+                stop_loss = low_or
                 rischio_pt = entry_price - stop_loss
                 tp_price = entry_price + (rischio_pt * rr_target)
                 tp_pt = tp_price - entry_price
                 
-                # Valutiamo l'esito nelle ore rimanenti della giornata
                 esito = "LOSS"
                 pnl_netto = -rischio_pt - attrito
                 
-                # Semplificazione simulazione intraday successiva
                 future_subset = resto_giornata.loc[idx:]
                 for _, sub_row in future_subset.iterrows():
                     if sub_row['Low'] <= stop_loss:
@@ -133,7 +124,6 @@ def esegui_backtest_fhb(df, capitale, attrito, rr_target):
                 equity.append(capitale_corrente)
                 trade_log.append({"Data": str(giorno), "Direzione": "LONG", "Esito": esito, "PnL": pnl_netto, "Equity": capitale_corrente})
                 
-            # Condizione SHORT: Prezzo rompe il minimo della prima ora
             elif l <= low_or:
                 pos_aperta = True
                 entry_price = low_or
