@@ -8,7 +8,7 @@ from sklearn.ensemble import RandomForestClassifier
 # --- CONFIGURAZIONE INTERFACCIA ---
 st.set_page_config(page_title="V-Alpha PRO | Knockout Trading AI", layout="wide")
 
-st.title("🤖 V-Alpha PRO | Random Forest AI (Knockout Edition)")
+st.title("🤖 V-Alpha PRO | Random Forest AI (Anti-IA & Knockout Edition)")
 st.markdown("---")
 
 # --- 1. MOTORE ADDESTRAMENTO RANDOM FOREST (DAILY) ---
@@ -115,6 +115,10 @@ capitale_utente = st.sidebar.number_input("Capitale Iniziale (€):", value=1500
 costo_attrito = st.sidebar.number_input("Costi Fissi (Comm. + Spread €):", value=12.0, step=1.0)
 soglia_filtro = st.sidebar.slider("Soglia Confidenza Minima IA (%):", 50.0, 75.0, 55.0, 1.0)
 
+st.sidebar.markdown("---")
+st.sidebar.header("🔄 Modalità Operativa")
+modalita_inversa = st.sidebar.checkbox("Attiva 'Anti-IA Mode' (Inverti Segnali)", value=True)
+
 if confidenza_ia < 55:
     pct_rischio = 0.01
 elif confidenza_ia < 65:
@@ -124,47 +128,42 @@ else:
 
 euro_da_rischiare = capitale_utente * pct_rischio
 
-# --- METRICHE LIVE ---
-st.markdown(f"**Asset Monitorato:** `{ticker_attivo}` | Aggiornato in tempo reale")
+# --- METRICHE LIVE (Adattate alla modalità) ---
+pred_effettiva = 0 if predizione_ia == 1 else 1 if modalita_inversa else predizione_ia
+# Se modalita_inversa è attivo, invertiamo la direzione live
+direzione_live_str = "LONG" if (predizione_ia == 1 and not modalita_inversa) or (predizione_ia == 0 and modalita_inversa) else "SHORT"
+
+st.markdown(f"**Asset Monitorato:** `{ticker_attivo}` | Modalità Inversa: **{'ATTIVA 🔄' / modalita_inversa if modalita_inversa else 'DISATTIVA'}**")
 col1, col2, col3 = st.columns(3)
 col1.metric("Supporto V-Alpha", supporto_operativo)
 col2.metric("Prezzo WTI Live", prezzo_live)
-col3.metric("Resistenza V-Alpha", resistenza_operativa)
+col3.metric("Resistenza V-Alpha", resistencia_operativa)
 
 st.markdown("---")
-st.subheader("🔮 Segnale Random Forest AI (Live)")
+st.subheader(f"🔮 Segnale Live ({'INVERTITO - Anti-IA' if modalita_inversa else 'Standard'})")
 
 c_pred1, c_pred2 = st.columns(2)
 with c_pred1:
-    if predizione_ia == 1:
-        st.success("PREDIZIONE IA: LONG 🟢")
-        direzione = "LONG"
-        livello_ingresso = supporto_operativo
-        take_profit = round(supporto_operativo + (atr * 2.0), 3)
-        stop_loss = round(low_mattina - (atr * 0.2), 3)
+    if direzione_live_str == "LONG":
+        st.success(f"SEGNALE LIVE: LONG 🟢 ({'IA diceva SHORT' if modalita_inversa else 'IA diceva LONG'})")
     else:
-        st.error("PREDIZIONE IA: SHORT 🔴")
-        direzione = "SHORT"
-        livello_ingresso = resistenza_operativa
-        take_profit = round(resistenza_operativa - (atr * 2.0), 3)
-        stop_loss = round(high_mattina + (atr * 0.2), 3)
+        st.error(f"SEGNALE LIVE: SHORT 🔴 ({'IA diceva LONG' if modalita_inversa else 'IA diceva SHORT'})")
 
 with c_pred2:
     st.metric("Confidenza IA", f"{confidenza_ia:.1f}%")
     st.metric("Rischio Profilo", f"{pct_rischio*100:.0f}% ({euro_da_rischiare:.2f} €)")
 
 # ==========================================
-# 3. AGGIUNTA: BACKTEST STORICO DEGLI ULTIMI 6 MESI
+# 3. BACKTEST STORICO CON OPZIONE DI INVERSIONE
 # ==========================================
 st.markdown("---")
 st.subheader("📊 Backtest Storico (Ultimi 6 Mesi con Costi Fissi)")
 
-def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_minima):
+def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_minima, inverti):
     equity = [capitale_iniziale]
     trade_log = []
     capitale_corrente = capitale_iniziale
     
-    # Prendiamo gli ultimi 6 mesi circa (126 sessioni borsistiche)
     test_df = dati_completi.tail(126).copy()
     
     variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
@@ -180,7 +179,11 @@ def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_
         conf = prob[pred] * 100
         
         if conf < conf_minima:
-            continue # Salta se la confidenza è bassa
+            continue
+            
+        # SE LA MODALITÀ INVERSA È ATTIVA, INVERTIAMO IL SEGNALE DELL'IA
+        if inverti:
+            pred = 0 if pred == 1 else 1
             
         data_trade = test_df.index[i].date()
         open_oggi = test_df['Open'].iloc[i]
@@ -188,7 +191,6 @@ def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_
         low_oggi = test_df['Low'].iloc[i]
         close_oggi = test_df['Close'].iloc[i]
         
-        # Simulazione semplificata basata su ATR o escursione giornaliera
         atr_giornaliero = high_oggi - low_oggi
         if atr_giornaliero <= 0:
             continue
@@ -196,7 +198,6 @@ def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_
         if pred == 1: # LONG
             rischio = atr_giornaliero * 0.5
             reward = atr_giornaliero * 1.0
-            # Verifichiamo se il mercato prende prima il target o lo stop
             if high_oggi >= open_oggi + reward:
                 pnl = reward - attrito
                 esito = "WIN"
@@ -220,7 +221,7 @@ def esegui_backtest_rf(dati_completi, modello, capitale_iniziale, attrito, conf_
     return pd.DataFrame(trade_log), equity
 
 if df_storico_completo is not None:
-    df_res_bt, eq_bt = esegui_backtest_rf(df_storico_completo, modello_rf, capitale_utente, costo_attrito, soglia_filtro)
+    df_res_bt, eq_bt = esegui_backtest_rf(df_storico_completo, modello_rf, capitale_utente, costo_attrito, soglia_filtro, modalita_inversa)
     
     if not df_res_bt.empty:
         tot_t = len(df_res_bt)
