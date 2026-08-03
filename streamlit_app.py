@@ -6,57 +6,60 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
 # --- CONFIGURAZIONE INTERFACCIA ---
-st.set_page_config(page_title="V-Alpha PRO | Fineco Daily KO S&P 500", layout="wide", page_icon="📈")
+st.set_page_config(page_title="V-Alpha PRO | Fineco Daily Knock-Out", layout="wide", page_icon="📈")
 
-st.title("🤖 V-Alpha PRO | Fineco Daily Knock-Out (S&P 500 Future)")
+st.title("🤖 V-Alpha PRO | Fineco Daily Knock-Out (S&P 500)")
 st.markdown("---")
 
-TICKER = "ES=F"  # S&P 500 Future (Sottostante reale dei Daily KO Fineco)
-
-# --- 1. FUNZIONE DI PREPARAZIONE DATI ---
+# --- 1. FUNZIONE DI PREPARAZIONE DATI CON FALLBACK AUTOMATICO ---
 @st.cache_data(ttl=3600)
-def scarica_e_prepara_dati(ticker):
-    try:
-        dati = yf.download(ticker, period="3y", interval="1d", auto_adjust=True, progress=False)
-        if isinstance(dati.columns, pd.MultiIndex):
-            dati.columns = dati.columns.get_level_values(0)
-            
-        if dati.empty or len(dati) < 200:
-            return None
+def scarica_e_prepara_dati():
+    tickers_da_provare = ["ES=F", "^GSPC", "SPY"]
+    for ticker in tickers_da_provare:
+        try:
+            dati = yf.download(ticker, period="3y", interval="1d", auto_adjust=True, progress=False)
+            if isinstance(dati.columns, pd.MultiIndex):
+                dati.columns = dati.columns.get_level_values(0)
+                
+            if not dati.empty and len(dati) >= 200:
+                dati['Ritorno_Prezzo'] = dati['Close'].pct_change()
+                dati['Media_20'] = dati['Close'].rolling(window=20).mean()
+                dati['Media_50'] = dati['Close'].rolling(window=50).mean()
+                dati['Target'] = np.where(dati['Close'] > dati['Open'], 1, 0)
 
-        dati['Ritorno_Prezzo'] = dati['Close'].pct_change()
-        dati['Media_20'] = dati['Close'].rolling(window=20).mean()
-        dati['Media_50'] = dati['Close'].rolling(window=50).mean()
-        dati['Target'] = np.where(dati['Close'] > dati['Open'], 1, 0)
+                delta = dati['Close'].diff()
+                guadagno = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                perdita = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                rs = guadagno / perdita
+                dati['RSI'] = 100 - (100 / (1 + rs))
 
-        delta = dati['Close'].diff()
-        guadagno = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        perdita = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = guadagno / perdita
-        dati['RSI'] = 100 - (100 / (1 + rs))
+                std20 = dati['Close'].rolling(window=20).std()
+                dati['Banda_Alta'] = dati['Media_20'] + (std20 * 2)
+                dati['Banda_Bassa'] = dati['Media_20'] - (std20 * 2)
+                dati['Dist_Media20'] = (dati['Close'] - dati['Media_20']) / dati['Media_20']
+                dati['Dist_Media50'] = (dati['Close'] - dati['Media_50']) / dati['Media_50']
+                dati['Larghezza_Bande'] = (dati['Banda_Alta'] - dati['Banda_Bassa']) / dati['Media_20']
 
-        std20 = dati['Close'].rolling(window=20).std()
-        dati['Banda_Alta'] = dati['Media_20'] + (std20 * 2)
-        dati['Banda_Bassa'] = dati['Media_20'] - (std20 * 2)
-        dati['Dist_Media20'] = (dati['Close'] - dati['Media_20']) / dati['Media_20']
-        dati['Dist_Media50'] = (dati['Close'] - dati['Media_50']) / dati['Media_50']
-        dati['Larghezza_Bande'] = (dati['Banda_Alta'] - dati['Banda_Bassa']) / dati['Media_20']
+                k = dati['Close'].ewm(span=12, adjust=False).mean()
+                d = dati['Close'].ewm(span=26, adjust=False).mean()
+                dati['MACD'] = k - d
+                dati['MACD_Signal'] = dati['MACD'].ewm(span=9, adjust=False).mean()
+                dati['MACD_Hist'] = dati['MACD'] - dati['MACD_Signal']
 
-        k = dati['Close'].ewm(span=12, adjust=False).mean()
-        d = dati['Close'].ewm(span=26, adjust=False).mean()
-        dati['MACD'] = k - d
-        dati['MACD_Signal'] = dati['MACD'].ewm(span=9, adjust=False).mean()
-        dati['MACD_Hist'] = dati['MACD'] - dati['MACD_Signal']
+                puliti = dati.dropna()
+                if not puliti.empty:
+                    return puliti, ticker
+        except Exception:
+            continue
+    return None, None
 
-        return dati.dropna()
-    except Exception:
-        return None
-
-df_storico = scarica_e_prepara_dati(TICKER)
+df_storico, ticker_usato = scarica_e_prepara_dati()
 
 if df_storico is None:
-    st.error("⚠️ Errore nel caricamento dei dati del Future S&P 500.")
+    st.error("⚠️ Errore nel caricamento dei dati di mercato. Riprova tra qualche minuto.")
     st.stop()
+else:
+    st.sidebar.success(f"🌐 Fonte dati attiva: {ticker_usato}")
 
 # --- PANNELLO LATERALE PULITO ---
 st.sidebar.header("⚙️ Impostazioni Daily KO")
@@ -69,7 +72,7 @@ with st.sidebar.expander("💰 Capitale & Costi", expanded=True):
 with st.sidebar.expander("🛡️ Stop Loss & Take Profit", expanded=True):
     attiva_sl_tp = st.checkbox("Attiva SL / TP Intraday", value=True)
     pct_sl = st.slider("Stop Loss (%)", 0.2, 1.5, 0.8, 0.1) / 100.0
-    pct_tp = st.slider("Take Profit (%)", 0.5, 3.0, 1.5, 0.1) / 100.0
+    pct_tp = st.slider("Take Profit (%)", 0.5, 3.0, 1.6, 0.1) / 100.0
 
 with st.sidebar.expander("🔄 Filtri IA", expanded=True):
     soglia_filtro = st.slider("Confidenza Minima IA (%):", 50.0, 75.0, 55.0, 1.0)
@@ -163,7 +166,7 @@ def esegui_walk_forward_daily_ko(dati, capitale_iniziale, spread, conf_minima, i
         
     return pd.DataFrame(trade_log), equity
 
-# Calcolo modello live sul Future
+# Calcolo modello live
 variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
              'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
 
@@ -208,23 +211,21 @@ with tab_live:
             st.error(f"### STRUMENTO: {direzione_effettiva_str} 🔴\n*(Il modello originale suggeriva: {segnalo_ia_str})*")
 
     with col_l2:
-        st.metric("Ultimo Prezzo Future S&P 500", prezzo_riferimento)
+        st.metric("Ultimo Prezzo S&P 500", prezzo_riferimento)
         st.metric("Confidenza IA / RSI Live", f"{confidenza_ia:.1f}% / RSI: {rsi_live}")
         
     st.markdown("---")
     st.subheader("🛠️ Livelli per Daily Options Knock-Out su Fineco")
     
     col_p1, col_p2, col_p3 = st.columns(3)
-    col_p1.metric("Prezzo Riferimento Future", f"{prezzo_riferimento}")
+    col_p1.metric("Prezzo Riferimento", f"{prezzo_riferimento}")
     col_p2.metric("Barriera / Stop Loss", f"{sl_live_val:.2f}", delta=f"-{pct_sl*100}%", delta_color="inverse")
     col_p3.metric("Take Profit", f"{tp_live_val:.2f}", delta=f"+{pct_tp*100}%", delta_color="normal")
     
-regola_testo = "💡 **Regola Daily KO:** Trattandosi di opzioni giornaliere che scadono a fine seduta, apri la posizione all'apertura e lasciala a scadenza o proteggila con i livelli indicati. Nessun rischio overnight."
-with tab_live:
-    st.info(regola_testo)
+    st.info("💡 **Regola Daily KO:** Trattandosi di opzioni giornaliere che scadono a fine seduta, apri la posizione all'apertura e lasciala a scadenza o proteggila con i livelli indicati. Nessun rischio overnight.")
 
 with tab_diagnostica:
-    st.subheader("🔍 Anatomia dei Trade (Sottostante: Future)")
+    st.subheader("🔍 Anatomia dei Trade")
     if not df_res.empty:
         vinti_df = df_res[df_res['Esito'] == "WIN"]
         persi_df = df_res[df_res['Esito'] == "LOSS"]
