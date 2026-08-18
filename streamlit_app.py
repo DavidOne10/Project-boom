@@ -6,12 +6,12 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 
 # --- CONFIGURAZIONE INTERFACCIA ---
-st.set_page_config(page_title="V-Alpha PRO | Fineco Daily Knock-Out", layout="wide", page_icon="📈")
+st.set_page_config(page_title="V-Alpha PRO | Daily Knock-Out Upgrade", layout="wide", page_icon="📈")
 
-st.title("🤖 V-Alpha PRO | Fineco Daily Knock-Out (S&P 500)")
+st.title("🤖 V-Alpha PRO | Daily Knock-Out (S&P 500)")
 st.markdown("---")
 
-# --- 1. FUNZIONE DI PREPARAZIONE DATI CON FALLBACK AUTOMATICO ---
+# --- 1. FUNZIONE DI PREPARAZIONE DATI ---
 @st.cache_data(ttl=3600)
 def scarica_e_prepara_dati():
     tickers_da_provare = ["ES=F", "^GSPC", "SPY"]
@@ -61,7 +61,7 @@ if df_storico is None:
 else:
     st.sidebar.success(f"🌐 Fonte dati attiva: {ticker_usato}")
 
-# --- PANNELLO LATERALE PULITO ---
+# --- PANNELLO LATERALE ---
 st.sidebar.header("⚙️ Impostazioni Daily KO")
 
 with st.sidebar.expander("💰 Capitale & Costi", expanded=True):
@@ -70,16 +70,17 @@ with st.sidebar.expander("💰 Capitale & Costi", expanded=True):
     dimensione_lotto = st.number_input("Moltiplicatore Contratto:", value=1.0, step=0.1)
 
 with st.sidebar.expander("🛡️ Stop Loss & Take Profit", expanded=True):
-    attiva_sl_tp = st.checkbox("Attiva SL / TP Intraday", value=True)
+    attiva_sltp = st.checkbox("Attiva SL / TP Intraday", value=True)
     pct_sl = st.slider("Stop Loss (%)", 0.2, 1.5, 0.8, 0.1) / 100.0
     pct_tp = st.slider("Take Profit (%)", 0.5, 3.0, 1.6, 0.1) / 100.0
 
-with st.sidebar.expander("🔄 Filtri IA", expanded=True):
+with st.sidebar.expander("🔄 Filtri IA & Upgrade", expanded=True):
     soglia_filtro = st.slider("Confidenza Minima IA (%):", 50.0, 75.0, 55.0, 1.0)
     modalita_inversa = st.checkbox("Attiva 'Anti-IA Mode'", value=True)
+    attiva_upgrade = st.checkbox("🚀 Attiva Filtri Upgrade (SMA50 + RSI)", value=True)
 
-# --- MOTORE BACKTEST DAILY KO ---
-def esegui_walk_forward_daily_ko(dati, capitale_iniziale, spread, conf_minima, inverti, lotto, usa_sltp, sl_val, tp_val):
+# --- MOTORE BACKTEST WALK-FORWARD CON UPGRADE ---
+def esegui_walk_forward_daily_ko(dati, capitale_iniziale, spread, conf_minima, inverti, lotto, usa_sltp, sl_val, tp_val, usa_upgrade):
     equity = [capitale_iniziale]
     trade_log = []
     capitale_corrente = capitale_iniziale
@@ -112,6 +113,21 @@ def esegui_walk_forward_daily_ko(dati, capitale_iniziale, spread, conf_minima, i
             op_eseguita = 0 if pred_ia == 1 else 1
         else:
             op_eseguita = pred_ia
+            
+        # --- APPLICAZIONE UPGRADE NEL WALK-FORWARD ---
+        if usa_upgrade:
+            rsi_attuale = dati['RSI'].iloc[i-1]
+            close_attuale = dati['Close'].iloc[i-1]
+            sma50_attuale = dati['Media_50'].iloc[i-1]
+            
+            # Filtro Zona Morta RSI (esclude congestioni)
+            if 45 <= rsi_attuale <= 55:
+                continue
+            # Filtro Trend SMA50 (evita operazioni contro-trend)
+            if op_eseguita == 1 and close_attuale < sma50_attuale:
+                continue
+            if op_eseguita == 0 and close_attuale > sma50_attuale:
+                continue
             
         data_trade = dati.index[i].date()
         prezzo_entrata = dati['Open'].iloc[i]
@@ -194,7 +210,8 @@ else:
     tp_live_val = prezzo_riferimento * (1 - pct_tp)
 
 df_res, eq_res = esegui_walk_forward_daily_ko(
-    df_storico, capitale_utente, spread_cost, soglia_filtro, modalita_inversa, dimensione_lotto, attiva_sl_tp, pct_sl, pct_tp
+    df_storico, capitale_utente, spread_cost, soglia_filtro, modalita_inversa, 
+    dimensione_lotto, attiva_sltp, pct_sl, pct_tp, attiva_upgrade
 )
 
 # --- STRUTTURA A SCHEDE ---
@@ -225,7 +242,7 @@ with tab_live:
     st.info("💡 **Regola Daily KO:** Trattandosi di opzioni giornaliere che scadono a fine seduta, apri la posizione all'apertura e lasciala a scadenza o proteggila con i livelli indicati. Nessun rischio overnight.")
 
 with tab_diagnostica:
-    st.subheader("🔍 Anatomia dei Trade")
+    st.subheader("🔍 Anatomia dei Trade (Walk-Forward 126 Giorni)")
     if not df_res.empty:
         vinti_df = df_res[df_res['Esito'] == "WIN"]
         persi_df = df_res[df_res['Esito'] == "LOSS"]
@@ -240,7 +257,7 @@ with tab_diagnostica:
         st.markdown("#### Curva Equity Daily KO")
         st.line_chart(eq_res)
     else:
-        st.warning("⚠️ Nessun dato diagnostico disponibile.")
+        st.warning("⚠️ Nessun trade effettuato con i filtri attuali (prova a disattivare l'upgrade o ad abbassare la confidenza).")
 
 with tab_storico:
     st.subheader("Registro Completo delle Operazioni Daily KO")
