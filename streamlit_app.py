@@ -36,7 +36,8 @@ except Exception as e:
 
 # Analisi Strategia
 symbol = "SPY"
-now_est = pd.Timestamp.now(tz='US/Eastern')
+now_est = pd.Timestamp.now(tz=pytz.timezone('US/Eastern'))
+
 current_time_str = now_est.strftime('%H:%M EST')
 
 request_params = StockBarsRequest(
