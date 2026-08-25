@@ -118,13 +118,45 @@ if is_long or is_short:
     else:
         st.success(f"✅ **MM OK**: Risk/Reward ottimale. Rischio: `${risk:.2f}` | Rendimento: `${reward:.2f}`")
 
-    # Scheda Livelli Fineco
-    st.write("**🇮🇹 Livelli Knock-Out Fineco (S&P 500 Indice):**")
-    st.code(
-        f"Trigger: {last_price * 10:.1f} pts\n"
-        f"SL (KO):  {sl_price * 10:.1f} pts\n"
-        f"TP:       {tp_price * 10:.1f} pts"
+    #     # 🇮🇹 SEZIONE FINECO AUTOMATIZZATA
+    st.write("---")
+    st.subheader("🇮🇹 Livelli Knock-Out Fineco (S&P 500 Indice)")
+
+    # Prezzo stimato (SPY x 10)
+    estimated_fineco = round(last_price * 10.0, 1)
+
+    # Input diretto del prezzo Fineco
+    fineco_price_input = st.number_input(
+        "Inserisci la quotazione ATTUALE dell'S&P 500 su Fineco:",
+        value=estimated_fineco,
+        step=0.5,
+        format="%.1f",
+        help="Digita qui il prezzo che vedi su Fineco. L'app ricalcolerà istantaneamente il KO e le distanze esatte."
     )
+
+    # Calcolo automatico del Delta (Scarto)
+    delta_offset = fineco_price_input - (last_price * 10.0)
+
+    # Ricalcolo automatico dei livelli KO e TP con il Delta
+    sl_fineco = (sl_price * 10.0) + delta_offset
+    tp_fineco = (tp_price * 10.0) + delta_offset
+
+    # Distanze dinamiche in punti
+    dist_sl_pts = abs(fineco_price_input - sl_fineco)
+    dist_tp_pts = abs(tp_fineco - fineco_price_input)
+
+    # Visualizzazione dinamica e chiara
+    col_f1, col_f2, col_f3 = st.columns(3)
+    col_f1.metric("Prezzo Fineco", f"{fineco_price_input:.1f} pts")
+    col_f2.metric("Distanza KO (Rischio)", f"{dist_sl_pts:.1f} pts")
+    col_f3.metric("Distanza TP (Target)", f"{dist_tp_pts:.1f} pts")
+
+    st.code(
+        f"🔴 BARRIERA KO (Stop Loss):     {sl_fineco:.1f} pts  [Distanza: -{dist_sl_pts:.1f} pts]\n"
+        f"🟢 TARGET PROFIT (Take Profit): {tp_fineco:.1f} pts  [Distanza: +{dist_tp_pts:.1f} pts]\n"
+        f"ℹ️ Delta rilevato (Fineco vs SPY): {delta_offset:+.1f} pts"
+    )
+
 
     # Pulsante Invio Ordine
     if has_open_position:
