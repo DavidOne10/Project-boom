@@ -1,6 +1,4 @@
 streamlit
-starlette==0.35.0
-yfinance
+alpaca-py
 pandas
 numpy
-scikit-learn
