@@ -1,258 +1,151 @@
-# -*- coding: utf-8 -*-
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from datetime import datetime, timedelta
+from alpaca.trading.client import TradingClient
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockBarsRequest
+from alpaca.data.timeframe import TimeFrame
+from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopLossRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
 
-# --- CONFIGURAZIONE INTERFACCIA ---
-st.set_page_config(page_title="V-Alpha PRO | Daily KO Clean", layout="wide", page_icon="📈")
+# Configurazione pagina
+st.set_page_config(page_title="SP500 Bot Execution", page_icon="📈", layout="centered")
 
-st.title("🤖 V-Alpha PRO | Daily Knock-Out (S&P 500) - Version Clean")
-st.markdown("---")
+st.title("📈 SP500 Intraday Strategy")
+st.caption("Dashboard di controllo e invio ordini su Alpaca")
 
-# --- 1. CARICAMENTO DATI REALI S&P 500 ---
-@st.cache_data(ttl=3600)
-def scarica_dati_puliti():
-    # Ticker ufficiale S&P 500 senza alterazioni di prezzo sui futures
-    dati = yf.download("^GSPC", period="3y", interval="1d", auto_adjust=False, progress=False)
-    if isinstance(dati.columns, pd.MultiIndex):
-        dati.columns = dati.columns.get_level_values(0)
-        
-    if dati.empty or len(dati) < 200:
-        return None
+# Credenziali API
+API_KEY = st.secrets.get("API_KEY", "PKSRPGHTEKXA6KIP4HV6AOEZ5Z")
+SECRET_KEY = st.secrets.get("SECRET_KEY", "7ZdgT6TyiEW5wkxSJqqpPHJL5qnxmJTMpoTk8PQ6cihw")
 
-    # Indicatori tecnici calcolati strictly sulla candela corrente t
-    dati['Ritorno_Prezzo'] = dati['Close'].pct_change()
-    dati['Media_20'] = dati['Close'].rolling(window=20).mean()
-    dati['Media_50'] = dati['Close'].rolling(window=50).mean()
+@st.cache_resource
+def get_clients():
+    trading = TradingClient(API_KEY, SECRET_KEY, paper=True)
+    data = StockHistoricalDataClient(API_KEY, SECRET_KEY)
+    return trading, data
 
-    delta = dati['Close'].diff()
-    guadagno = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    perdita = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = guadagno / perdita
-    dati['RSI'] = 100 - (100 / (1 + rs))
-
-    std20 = dati['Close'].rolling(window=20).std()
-    dati['Banda_Alta'] = dati['Media_20'] + (std20 * 2)
-    dati['Banda_Bassa'] = dati['Media_20'] - (std20 * 2)
-    dati['Dist_Media20'] = (dati['Close'] - dati['Media_20']) / dati['Media_20']
-    dati['Dist_Media50'] = (dati['Close'] - dati['Media_50']) / dati['Media_50']
-    dati['Larghezza_Bande'] = (dati['Banda_Alta'] - dati['Banda_Bassa']) / dati['Media_20']
-
-    k = dati['Close'].ewm(span=12, adjust=False).mean()
-    d = dati['Close'].ewm(span=26, adjust=False).mean()
-    dati['MACD'] = k - d
-    dati['MACD_Signal'] = dati['MACD'].ewm(span=9, adjust=False).mean()
-    dati['MACD_Hist'] = dati['MACD'] - dati['MACD_Signal']
-
-    # TARGET CORRETTO: 1 se la chiusura di DOMANI (t+1) > chiusura di OGGI (t)
-    dati['Target'] = np.where(dati['Close'].shift(-1) > dati['Close'], 1, 0)
-
-    return dati.dropna()
-
-df_storico = scarica_dati_puliti()
-
-if df_storico is None:
-    st.error("⚠️ Errore nel caricamento dei dati di mercato S&P 500 (^GSPC).")
+try:
+    trading_client, data_client = get_clients()
+    account = trading_client.get_account()
+    st.sidebar.success(f"Connesso! Saldo: ${float(account.equity):,.2f}")
+except Exception as e:
+    st.error(f"Errore connessione Alpaca: {e}")
     st.stop()
-else:
-    st.sidebar.success("🌐 Fonte dati attiva: ^GSPC (S&P 500 Index)")
 
-# --- PANNELLO LATERALE ---
-st.sidebar.header("⚙️ Impostazioni Daily KO")
+# Analisi Strategia
+symbol = "SPY"
+now_est = pd.Timestamp.now(tz='US/Eastern')
+current_time_str = now_est.strftime('%H:%M EST')
 
-with st.sidebar.expander("💰 Capitale & Costi", expanded=True):
-    capitale_utente = st.number_input("Capitale Iniziale (€):", value=1500.0, step=100.0)
-    spread_cost = st.number_input("Costo Spread/Commissioni ($):", value=0.50, step=0.10, format="%.2f")
-    dimensione_lotto = st.number_input("Moltiplicatore Contratto:", value=1.0, step=0.1)
-
-with st.sidebar.expander("🛡️ Stop Loss & Take Profit", expanded=True):
-    attiva_sltp = st.checkbox("Attiva SL / TP Intraday", value=True)
-    pct_sl = st.slider("Stop Loss (%)", 0.2, 1.5, 0.8, 0.1) / 100.0
-    pct_tp = st.slider("Take Profit (%)", 0.5, 3.0, 1.6, 0.1) / 100.0
-
-with st.sidebar.expander("🚀 Filtri Strategia", expanded=True):
-    soglia_filtro = st.slider("Confidenza Minima IA (%):", 50.0, 75.0, 55.0, 1.0)
-    attiva_upgrade = st.checkbox("Attiva Filtri Upgrade (Filtro RSI 45-55)", value=True)
-
-# --- MOTORE WALK-FORWARD CORRETTO ---
-def esegui_walk_forward_pulito(dati, capitale_iniziale, spread, conf_minima, lotto, usa_sltp, sl_val, tp_val, usa_upgrade):
-    equity = [capitale_iniziale]
-    trade_log = []
-    capitale_corrente = capitale_iniziale
-    
-    variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
-                 'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
-    
-    finestra_test = 126
-    # Ci fermiamo a len(dati)-1 perché l'ultima riga non ha ancora il Target di domani definito
-    punto_inizio = len(dati) - finestra_test - 1
-    
-    for i in range(punto_inizio, len(dati) - 1):
-        # 1. Train solo sui dati passati fino a i-1
-        dati_train = dati.iloc[:i]
-        X_train = dati_train[variabili]
-        y_train = dati_train['Target']
-        
-        modello = RandomForestClassifier(
-            n_estimators=50, max_depth=3, min_samples_split=40, min_samples_leaf=25, random_state=42
-        )
-        modello.fit(X_train, y_train)
-        
-        # 2. Predizione sul giorno i (usando i dati di chiusura del giorno i)
-        riga_test = dati.iloc[i:i+1][variabili]
-        prob = modello.predict_proba(riga_test)[0]
-        pred_ia = modello.predict(riga_test)[0]
-        conf = prob[pred_ia] * 100
-        
-        if conf < conf_minima:
-            continue
-            
-        rsi_attuale = dati['RSI'].iloc[i]
-        close_attuale = dati['Close'].iloc[i]
-        sma50_attuale = dati['Media_50'].iloc[i]
-        
-        # 3. Filtri operativi Upgrade
-        if usa_upgrade:
-            if 45 <= rsi_attuale <= 55:
-                continue
-            if pred_ia == 1 and close_attuale < sma50_attuale:
-                continue
-            if pred_ia == 0 and close_attuale > sma50_attuale:
-                continue
-
-        # 4. Esecuzione trade il giorno i+1 (domani)
-        idx_domani = i + 1
-        data_trade = dati.index[idx_domani].date()
-        prezzo_entrata = dati['Open'].iloc[idx_domani]
-        high_giorno = dati['High'].iloc[idx_domani]
-        low_giorno = dati['Low'].iloc[idx_domani]
-        prezzo_chiusura = dati['Close'].iloc[idx_domani]
-        
-        prezzo_uscita = prezzo_chiusura
-        esito_uscita = "SCADENZA GIORNALIERA"
-        
-        if usa_sltp:
-            if pred_ia == 1: # LONG
-                prezzo_sl = prezzo_entrata * (1 - sl_val)
-                prezzo_tp = prezzo_entrata * (1 + tp_val)
-                if low_giorno <= prezzo_sl:
-                    prezzo_uscita = prezzo_sl
-                    esito_uscita = "KNOCK-OUT / STOP"
-                elif high_giorno >= prezzo_tp:
-                    prezzo_uscita = prezzo_tp
-                    esito_uscita = "TAKE PROFIT"
-            else: # SHORT
-                prezzo_sl = prezzo_entrata * (1 + sl_val)
-                prezzo_tp = prezzo_entrata * (1 - tp_val)
-                if high_giorno >= prezzo_sl:
-                    prezzo_uscita = prezzo_sl
-                    esito_uscita = "KNOCK-OUT / STOP"
-                elif low_giorno <= prezzo_tp:
-                    prezzo_uscita = prezzo_tp
-                    esito_uscita = "TAKE PROFIT"
-
-        variazione = prezzo_uscita - prezzo_entrata
-        pnl_lordo = variazione * lotto if pred_ia == 1 else -variazione * lotto
-        pnl_netto = pnl_lordo - (spread * lotto)
-        
-        capitale_corrente += pnl_netto
-        equity.append(capitale_corrente)
-        
-        trade_log.append({
-            "Data": str(data_trade),
-            "Eseguito": "LONG (CALL)" if pred_ia == 1 else "SHORT (PUT)",
-            "Uscita": esito_uscita,
-            "Esito": "WIN" if pnl_netto > 0 else "LOSS",
-            "Confidenza (%)": round(conf, 1),
-            "RSI": round(rsi_attuale, 1),
-            "PnL (€)": round(pnl_netto, 2),
-            "Capitale (€)": round(capitale_corrente, 2)
-        })
-        
-    return pd.DataFrame(trade_log), equity
-
-# --- SEGNALE LIVE CORRETTO ---
-variabili = ['Media_20', 'Close', 'Media_50', 'Ritorno_Prezzo', 'RSI', 'MACD',
-             'MACD_Signal', 'MACD_Hist', 'Dist_Media20', 'Dist_Media50', 'Larghezza_Bande']
-
-# Fit sull'intero storico disponibile tranne l'ultima riga aperta
-X_live = df_storico[variabili].iloc[:-1]
-y_live = df_storico['Target'].iloc[:-1]
-
-modello_live = RandomForestClassifier(
-    n_estimators=50, max_depth=3, min_samples_split=40, min_samples_leaf=25, random_state=42
-)
-modello_live.fit(X_live, y_live)
-
-# Predizione sull'ultima candela CHIUSA
-ultimo_dato_chiuso = df_storico[variabili].iloc[[-1]]
-prob_live = modello_live.predict_proba(ultimo_dato_chiuso)[0]
-pred_live = modello_live.predict(ultimo_dato_chiuso)[0]
-
-confidenza_ia = prob_live[pred_live] * 100
-prezzo_riferimento = round(float(df_storico['Close'].iloc[-1]), 2)
-rsi_live = round(float(df_storico['RSI'].iloc[-1]), 1)
-direzione_str = "LONG (CALL)" if pred_live == 1 else "SHORT (PUT)"
-
-if pred_live == 1:
-    sl_live_val = prezzo_riferimento * (1 - pct_sl)
-    tp_live_val = prezzo_riferimento * (1 + pct_tp)
-else:
-    sl_live_val = prezzo_riferimento * (1 + pct_sl)
-    tp_live_val = prezzo_riferimento * (1 - pct_tp)
-
-df_res, eq_res = esegui_walk_forward_pulito(
-    df_storico, capitale_utente, spread_cost, soglia_filtro, 
-    dimensione_lotto, attiva_sltp, pct_sl, pct_tp, attiva_upgrade
+request_params = StockBarsRequest(
+    symbol_or_symbols=symbol,
+    timeframe=TimeFrame.Minute,
+    start=now_est - timedelta(days=2)
 )
 
-# --- LAYOUT INTERFACCIA ---
-tab_live, tab_diagnostica, tab_storico = st.tabs(["🎯 Segnale Daily KO Live", "🔬 Diagnostica & Filtri", "📋 Storico Dettagliato"])
+bars = data_client.get_stock_bars(request_params)
+df = bars.df.reset_index()
+df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_convert('US/Eastern')
+df['Date'] = df['timestamp'].dt.date
 
-with tab_live:
-    st.subheader("Verdetto Operativo Daily Knock-Out (Segnale Ufficiale)")
+df_5m = df.groupby('Date').resample('5min', on='timestamp').agg({
+    'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
+}).dropna().reset_index()
+
+today = now_est.date()
+df_today = df_5m[df_5m['Date'] == today].copy()
+
+if df_today.empty or len(df_today) < 4:
+    st.warning("⚠️ Dati di oggi non ancora sufficienti per l'analisi.")
+    st.stop()
+
+# Calcolo Indicatori
+df_today['TP'] = (df_today['high'] + df_today['low'] + df_today['close']) / 3
+df_today['PV'] = df_today['TP'] * df_today['volume']
+df_today['VWAP'] = df_today['PV'].cumsum() / df_today['volume'].cumsum()
+
+hl = df_today['high'] - df_today['low']
+hc = np.abs(df_today['high'] - df_today['close'].shift())
+lc = np.abs(df_today['low'] - df_today['close'].shift())
+df_today['ATR'] = pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(14).mean()
+
+df_today.set_index('timestamp', inplace=True)
+orb = df_today.between_time('09:30', '09:45')
+
+if orb.empty:
+    st.info("⏳ ORB 15m non ancora completato (attendi le 15:45 italiane).")
+    st.stop()
+
+orb_high = orb['high'].max()
+orb_low = orb['low'].min()
+last_bar = df_today.iloc[-1]
+last_price = last_bar['close']
+last_vwap = last_bar['VWAP']
+last_atr = last_bar['ATR']
+
+# Visualizzazione Dati Mercato
+col1, col2, col3 = st.columns(3)
+col1.metric("Prezzo Attuale", f"${last_price:.2f}")
+col2.metric("VWAP", f"${last_vwap:.2f}")
+col3.metric("ATR 14", f"${last_atr:.2f}")
+
+st.divider()
+
+# Logica Segnale
+is_long = last_price > orb_high and last_price > last_vwap
+is_short = last_price < orb_low and last_price < last_vwap
+
+positions = trading_client.get_all_positions()
+has_open_position = len(positions) > 0
+
+if is_long or is_short:
+    direction = "LONG" if is_long else "SHORT"
+    sl_price = round(orb_low if is_long else orb_high, 2)
+    tp_price = round(last_price + (2.0 * last_atr) if is_long else last_price - (2.0 * last_atr), 2)
+    side = OrderSide.BUY if is_long else OrderSide.SELL
+
+    risk = abs(last_price - sl_price)
+    reward = abs(tp_price - last_price)
+
+    st.subheader(f"🟢 SEGNALE ATTIVO: {direction}")
     
-    col_l1, col_l2 = st.columns(2)
-    with col_l1:
-        if pred_live == 1:
-            st.success(f"### STRUMENTO: {direzione_str} 🟢")
-        else:
-            st.error(f"### STRUMENTO: {direzione_str} 🔴")
-
-    with col_l2:
-        st.metric("Ultima Chiusura S&P 500 (^GSPC)", f"{prezzo_riferimento} pt")
-        st.metric("Confidenza IA / RSI Chiusura", f"{confidenza_ia:.1f}% / RSI: {rsi_live}")
-        
-    st.markdown("---")
-    st.subheader("🛠️ Livelli per Daily Options Knock-Out su Fineco")
-    
-    col_p1, col_p2, col_p3 = st.columns(3)
-    col_p1.metric("Prezzo Riferimento", f"{prezzo_riferimento}")
-    col_p2.metric("Barriera / Stop Loss", f"{sl_live_val:.2f}", delta=f"-{pct_sl*100:.1f}%", delta_color="inverse")
-    col_p3.metric("Take Profit", f"{tp_live_val:.2f}", delta=f"+{pct_tp*100:.1f}%", delta_color="normal")
-
-with tab_diagnostica:
-    st.subheader("Anatomia dei Trade (Walk-Forward Pulito)")
-    if not df_res.empty:
-        vinti_df = df_res[df_res['Esito'] == "WIN"]
-        persi_df = df_res[df_res['Esito'] == "LOSS"]
-        
-        d1, d2, d3, d4 = st.columns(4)
-        d1.metric("Trade Vincenti", len(vinti_df))
-        d2.metric("Trade Perdenti", len(persi_df))
-        d3.metric("Win Rate Reale", f"{(len(vinti_df)/len(df_res))*100:.1f}%")
-        d4.metric("PnL Totale Reale", f"{df_res['PnL (€)'].sum():.2f} €")
-        
-        st.markdown("---")
-        st.line_chart(eq_res)
+    # Valutazione Money Management
+    if reward < risk:
+        st.warning(f"⚠️ **MM Warning**: Trade svantaggioso! Rischio: `${risk:.2f}` | Rendimento: `${reward:.2f}`")
     else:
-        st.warning("⚠️ Nessun trade generato con i filtri selezionati.")
+        st.success(f"✅ **MM OK**: Risk/Reward ottimale. Rischio: `${risk:.2f}` | Rendimento: `${reward:.2f}`")
 
-with tab_storico:
-    st.subheader("Registro Completo delle Operazioni (Senza Ricalcoli)")
-    if not df_res.empty:
-        st.dataframe(df_res, use_container_width=True)
+    # Scheda Livelli Fineco
+    st.write("**🇮🇹 Livelli Knock-Out Fineco (S&P 500 Indice):**")
+    st.code(
+        f"Trigger: {last_price * 10:.1f} pts\n"
+        f"SL (KO):  {sl_price * 10:.1f} pts\n"
+        f"TP:       {tp_price * 10:.1f} pts"
+    )
+
+    # Pulsante Invio Ordine
+    if has_open_position:
+        st.info("⚠️ Posizione già aperta su Alpaca. Impossibile inviare nuovi ordini.")
     else:
-        st.warning("⚠️ Nessun dato presente.")
+        if st.button("🚀 ESEGUI ORDINE BRACKET SU ALPACA", type="primary", use_container_width=True):
+            try:
+                order_data = MarketOrderRequest(
+                    symbol=symbol,
+                    qty=10,
+                    side=side,
+                    time_in_force=TimeInForce.DAY,
+                    order_class=OrderClass.BRACKET,
+                    take_profit=TakeProfitRequest(limit_price=tp_price),
+                    stop_loss=StopLossRequest(stop_price=sl_price)
+                )
+                order = trading_client.submit_order(order_data)
+                st.balloons()
+                st.success(f"✅ Ordine inviato con successo! ID: {order.id}")
+            except Exception as ex:
+                st.error(f"Errore nell'invio dell'ordine: {ex}")
+else:
+    st.info(f"⏳ **Nessun segnale al momento** ({current_time_str}). Prezzo all'interno del range neutro.")
+
+if st.button("🔄 Aggiorna Dati"):
+    st.rerun()
