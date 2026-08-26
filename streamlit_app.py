@@ -158,9 +158,18 @@ if is_long or is_short:
     )
 
 
-    # Pulsante Invio Ordine
+    #     # Gestione Posizione e Pulsanti
     if has_open_position:
-        st.info("⚠️ Posizione già aperta su Alpaca. Impossibile inviare nuovi ordini.")
+        st.warning("⚠️ **Hai una posizione aperta su Alpaca.**")
+        
+        # Tasto per chiudere la posizione prima delle 22:00
+        if st.button("🔴 CHIUDI POSIZIONE ADESSO (21:55)", type="primary", use_container_width=True):
+            try:
+                trading_client.close_all_positions(cancel_orders=True)
+                st.success("✅ Posizione chiusa e ordini cancellati con successo!")
+                st.rerun()
+            except Exception as ex:
+                st.error(f"Errore durante la chiusura: {ex}")
     else:
         if st.button("🚀 ESEGUI ORDINE BRACKET SU ALPACA", type="primary", use_container_width=True):
             try:
@@ -176,8 +185,10 @@ if is_long or is_short:
                 order = trading_client.submit_order(order_data)
                 st.balloons()
                 st.success(f"✅ Ordine inviato con successo! ID: {order.id}")
+                st.rerun()
             except Exception as ex:
                 st.error(f"Errore nell'invio dell'ordine: {ex}")
+
 else:
     st.info(f"⏳ **Nessun segnale al momento** ({current_time_str}). Prezzo all'interno del range neutro.")
 
