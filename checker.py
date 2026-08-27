@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 # --- CREDENZIALI DA GITHUB SECRETS ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
@@ -33,7 +33,7 @@ def send_telegram(message):
     except Exception as e:
         print(f"❌ Errore di connessione a Telegram: {e}")
 
-# --- TEST CONNETTIVITÀ TELEGRAM ---
+# --- TEST CONNETTIVITÀ ---
 if len(sys.argv) > 1 and sys.argv[1] == "--test":
     test_msg = (
         "🧪 *TEST TELEGRAM & ALPACA COMPLETO*\n\n"
@@ -46,7 +46,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "--test":
 def get_alpaca_bars(symbol, timeframe="15Min", limit=200):
     """Scarica barre in tempo reale da Alpaca Market Data API."""
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
-        print("❌ Manca Alpaca API Key o Secret Key nei Secrets!")
+        print("❌ Manca ALPACA_API_KEY o ALPACA_SECRET_KEY nei Secrets di GitHub!")
         return pd.DataFrame()
 
     headers = {
@@ -70,8 +70,9 @@ def get_alpaca_bars(symbol, timeframe="15Min", limit=200):
     df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close'}, inplace=True)
     return df
 
-# --- MAPPA ASSET REAL-TIME (ETF liquidi per replicare Commodities su Alpaca) ---
+# --- MAPPA ASSET REAL-TIME ---
 ASSETS = {
+    "S&P 500 (SPY)": "SPY",
     "PETROLIO WTI (USO)": "USO",
     "ORO (GLD)": "GLD"
 }
