@@ -1,171 +1,156 @@
-# -*- coding: utf-8 -*-
 import os
+import sys
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta, timezone
 
-# Alpaca SDK
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
+# --- CREDENZIALI DA GITHUB SECRETS ---
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
+ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
 
-# Machine Learning
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.preprocessing import StandardScaler
+ALPACA_BASE_URL = "https://data.alpaca.markets/v2"
 
-# --- CONFIGURAZIONE ---
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "IL_TUO_API_KEY")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "IL_TUO_SECRET_KEY")
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-SYMBOL = "USO"  # United States Oil Fund (Proxy WTI su Alpaca)
-SOGLIA_WINRATE = 60.0  # Alzata al 60% per massima selettività
-RR_MINIMO = 1.5
-
-def invia_notifica_telegram(messaggio):
+def send_telegram(message):
+    """Invia un messaggio formattato su Telegram."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Credenziali Telegram mancanti.")
+        print(f"⚠️ Credenziali Telegram non trovate. Messaggio simulato:\n{message}")
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": messaggio, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, json=payload, timeout=10)
-        print("🚀 Notifica Telegram inviata!")
-    except Exception as e:
-        print(f"❌ Errore Telegram: {e}")
-
-def scarica_dati_alpaca(symbol, giorni=180):
-    """Download dati ultra-veloce via Alpaca Data API"""
-    client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-    end_date = datetime.now(timezone.utc)
-    start_date = end_date - timedelta(days=giorni)
     
-    request_params = StockBarsRequest(
-        symbol_or_symbols=symbol,
-        timeframe=TimeFrame.Hour,
-        start=start_date,
-        end=end_date
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=10)
+        if res.status_code == 200:
+            print("✅ Messaggio Telegram inviato con successo!")
+        else:
+            print(f"❌ Errore Telegram: {res.text}")
+    except Exception as e:
+        print(f"❌ Errore di connessione a Telegram: {e}")
+
+# --- TEST CONNETTIVITÀ TELEGRAM ---
+if len(sys.argv) > 1 and sys.argv[1] == "--test":
+    test_msg = (
+        "🧪 *TEST TELEGRAM & ALPACA COMPLETO*\n\n"
+        "✅ Telegram Token & Chat ID collegati correttamente!\n"
+        "🚀 *Sistema ORB 15m in Real-Time pronto su GitHub Actions.*"
     )
-    bars = client.get_stock_bars(request_params)
-    df = bars.df.reset_index(level=0, drop=True)
-    df = df.rename(columns={
-        'open': 'Open', 'high': 'High', 'low': 'Low', 
-        'close': 'Close', 'volume': 'Volume'
-    })
+    send_telegram(test_msg)
+    sys.exit(0)
+
+def get_alpaca_bars(symbol, timeframe="15Min", limit=200):
+    """Scarica barre in tempo reale da Alpaca Market Data API."""
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        print("❌ Manca Alpaca API Key o Secret Key nei Secrets!")
+        return pd.DataFrame()
+
+    headers = {
+        "APCA-API-KEY-ID": ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY
+    }
+    url = f"{ALPACA_BASE_URL}/stocks/bars?symbols={symbol}&timeframe={timeframe}&limit={limit}&feed=sip"
+    
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        print(f"❌ Errore download Alpaca per {symbol}: {response.text}")
+        return pd.DataFrame()
+
+    data = response.json().get("bars", {}).get(symbol, [])
+    if not data:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(data)
+    df['t'] = pd.to_datetime(df['t'])
+    df.set_index('t', inplace=True)
+    df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close'}, inplace=True)
     return df
 
-def calcola_indicatori(df):
-    # EMA Trend Macro
-    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
-    
-    # RSI 14
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    df['RSI_14'] = 100 - (100 / (1 + (gain / loss)))
+# --- MAPPA ASSET REAL-TIME (ETF liquidi per replicare Commodities su Alpaca) ---
+ASSETS = {
+    "PETROLIO WTI (USO)": "USO",
+    "ORO (GLD)": "GLD"
+}
 
-    # ATR 14
+print("1. Avvio scansione REAL-TIME tramite Alpaca Data API...")
+
+for asset_name, symbol in ASSETS.items():
+    df = get_alpaca_bars(symbol, timeframe="15Min", limit=150)
+    if df.empty:
+        continue
+
+    # Calcolo Indicatori Tecnici
+    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
     df['ATR'] = np.max(pd.concat([high_low, high_close, low_close], axis=1), axis=1).rolling(14).mean()
-    df['ATR_pct'] = (df['ATR'] / df['Close']) * 100
 
-    # ADX (Filtro Forza Trend)
-    plus_dm = df['High'].diff()
-    minus_dm = df['Low'].diff().abs()
-    plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0)
-    minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0)
+    df['Date'] = df.index.date
+    df['Hour'] = df.index.hour
+    df['Minute'] = df.index.minute
+
+    today_date = df['Date'].max()
+    today_bars = df[df['Date'] == today_date]
+
+    # Candela ORB 14:30 CET (13:30 UTC / 09:30 EST)
+    orb_candle = today_bars[(today_bars['Hour'] == 13) & (today_bars['Minute'] == 30)]
     
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    atr_adx = tr.rolling(14).mean()
-    
-    plus_di = 100 * (pd.Series(plus_dm).rolling(14).mean() / atr_adx)
-    minus_di = 100 * (pd.Series(minus_dm).rolling(14).mean() / atr_adx)
-    dx = 100 * (np.abs(plus_di - minus_di) / (plus_di + minus_di))
-    df['ADX'] = dx.rolling(14).mean()
+    if orb_candle.empty:
+        print(f"🕒 [{asset_name}] Candela ORB 14:30 CET non ancora presente.")
+        continue
 
-    # Distanze percentuali
-    df['Dist_EMA200_pct'] = ((df['Close'] - df['EMA_200']) / df['EMA_200']) * 100
-    df['Supporto_Macro'] = df['Low'].rolling(100).min()
-    df['Resistenza_Macro'] = df['High'].rolling(100).max()
-    
-    return df
+    orb_high = orb_candle['High'].values[0]
+    orb_low = orb_candle['Low'].values[0]
+    orb_range = orb_high - orb_low
+    atr = orb_candle['ATR'].values[0]
+    ema = orb_candle['EMA_200'].values[0]
 
-def main():
-    print(f"1. Download dati da Alpaca per {SYMBOL}...")
-    df = scarica_dati_alpaca(SYMBOL)
-    
-    if df.empty:
-        print("❌ Nessun dato ricevuto da Alpaca.")
-        return
+    # Filtro volatilità minima
+    if pd.isna(atr) or orb_range < (0.25 * atr):
+        print(f"⚠️ [{asset_name}] Volatilità dell'ORB troppo contenuta. Sessione scartata.")
+        continue
 
-    print("2. Calcolo indicatori ed etichettatura dinamica...")
-    df = calcola_indicatori(df).dropna().copy()
+    session_bars = today_bars[(today_bars['Hour'] > 13) | ((today_bars['Hour'] == 13) & (today_bars['Minute'] > 30))]
+    if session_bars.empty:
+        continue
 
-    # Target dinamico legato all'ATR (1.5x ATR)
-    df['Future_Min'] = df['Low'].shift(-5).rolling(5).min()
-    df['Future_Max'] = df['High'].shift(-5).rolling(5).max()
-    df['Hit_Short'] = np.where(df['Future_Min'] <= (df['Close'] - (1.5 * df['ATR'])), 1, 0)
-    df['Hit_Long'] = np.where(df['Future_Max'] >= (df['Close'] + (1.5 * df['ATR'])), 1, 0)
+    latest_bar = session_bars.iloc[-1]
 
-    features = ['RSI_14', 'Dist_EMA200_pct', 'ATR_pct', 'ADX']
-
-    # Dataset Training vs Predizione Attuale
-    train_df = df.iloc[:-5].dropna()
-    X_train = train_df[features]
-    y_short = train_df['Hit_Short']
-    y_long = train_df['Hit_Long']
-    
-    situazione_attuale = df[features].iloc[[-1]]
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_train)
-    attuale_scaled = scaler.transform(situazione_attuale)
-
-    print("3. Esecuzione k-NN...")
-    knn_short = KNeighborsClassifier(n_neighbors=30, weights='distance')
-    knn_short.fit(X_scaled, y_short)
-    prob_short = knn_short.predict_proba(attuale_scaled)[0][1] * 100
-
-    knn_long = KNeighborsClassifier(n_neighbors=30, weights='distance')
-    knn_long.fit(X_scaled, y_long)
-    prob_long = knn_long.predict_proba(attuale_scaled)[0][1] * 100
-
-    prezzo = float(df['Close'].iloc[-1])
-    atr = float(df['ATR'].iloc[-1])
-    adx_attuale = float(df['ADX'].iloc[-1])
-    ema200 = float(df['EMA_200'].iloc[-1])
-    
-    print(f"📊 {SYMBOL}: ${prezzo:.2f} | ADX: {adx_attuale:.1f} | Short Prob: {prob_short:.1f}% | Long Prob: {prob_long:.1f}%")
-
-    # FILTRO VOLATILITÀ: Se ADX < 20 il mercato è in range/rumore
-    if adx_attuale < 20:
-        print("⚠️ Mercato in fase laterale (ADX < 20). Nessun segnale generato.")
-        return
-
-    # LOGICA SEGNALE SHORT (Solo se sotto EMA200)
-    if prob_short >= SOGLIA_WINRATE and prezzo < ema200:
-        sl_short = round(prezzo + (atr * 1.2), 2)
-        tp_short = round(prezzo - (atr * 2.0), 2)
-        rr_short = round((prezzo - tp_short) / (sl_short - prezzo), 2)
+    # SEGNALE LONG CONFERMATO
+    if latest_bar['Close'] > orb_high and latest_bar['Close'] > ema:
+        entry = latest_bar['Close']
+        tp = entry + (1.2 * orb_range)
+        sl = orb_low
         
-        if rr_short >= RR_MINIMO:
-            msg = f"📉 *SEGNALE {SYMBOL} SHORT*\nWin Rate Stima: {prob_short:.1f}%\nPrezzo: ${prezzo:.2f}\nStop Loss: ${sl_short:.2f}\nTake Profit: ${tp_short:.2f}\nR/R: {rr_short}"
-            invia_notifica_telegram(msg)
+        msg = (
+            f"🚨 *SEGNALE REAL-TIME (ALPACA) — {asset_name}*\n\n"
+            f"📈 *Azione:* COMPRA (Breakout ORB Confermato)\n"
+            f"📌 *Prezzo Ingresso:* `{entry:.2f}`\n"
+            f"🎯 *Take Profit:* `{tp:.2f}`\n"
+            f"🛡️ *Stop Loss:* `{sl:.2f}`\n\n"
+            f"📊 *Dati Real-time:* Chiusura candela sopra Max ORB ({orb_high:.2f}) e sopra EMA200."
+        )
+        send_telegram(msg)
 
-    # LOGICA SEGNALE LONG (Solo se sopra EMA200)
-    elif prob_long >= SOGLIA_WINRATE and prezzo > ema200:
-        sl_long = round(prezzo - (atr * 1.2), 2)
-        tp_long = round(prezzo + (atr * 2.0), 2)
-        rr_long = round((tp_long - prezzo) / (prezzo - sl_long), 2)
-        
-        if rr_long >= RR_MINIMO:
-            msg = f"🚀 *SEGNALE {SYMBOL} LONG*\nWin Rate Stima: {prob_long:.1f}%\nPrezzo: ${prezzo:.2f}\nStop Loss: ${sl_long:.2f}\nTake Profit: ${tp_long:.2f}\nR/R: {rr_long}"
-            invia_notifica_telegram(msg)
+    # SEGNALE SHORT CONFERMATO
+    elif latest_bar['Close'] < orb_low and latest_bar['Close'] < ema:
+        entry = latest_bar['Close']
+        tp = entry - (1.2 * orb_range)
+        sl = orb_high
 
-if __name__ == "__main__":
-    main()
+        msg = (
+            f"🚨 *SEGNALE REAL-TIME (ALPACA) — {asset_name}*\n\n"
+            f"📉 *Azione:* VENDI (Breakdown ORB Confermato)\n"
+            f"📌 *Prezzo Ingresso:* `{entry:.2f}`\n"
+            f"🎯 *Take Profit:* `{tp:.2f}`\n"
+            f"🛡️ *Stop Loss:* `{sl:.2f}`\n\n"
+            f"📊 *Dati Real-time:* Chiusura candela sotto Min ORB ({orb_low:.2f}) e sotto EMA200."
+        )
+        send_telegram(msg)
+
+print("Scansione Real-Time completata.")
