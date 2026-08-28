@@ -119,7 +119,7 @@ if is_long or is_short:
         st.success(f"✅ **MM OK**: Risk/Reward ottimale. Rischio: `${risk:.2f}` | Rendimento: `${reward:.2f}`")
 
     #     # 🇮🇹 SEZIONE FINECO AUTOMATIZZATA
-    sst.divider()
+    st.divider()
 st.subheader("🧮 Calcolatore Livelli Fineco (Knock-Out)")
 
 # 1. Selezione Asset e Direzione
@@ -194,6 +194,7 @@ st.code(
     f"🔴 Barriera KO:  {sl_fineco:.2f}  [Distanza: {dist_sl:.2f}]\n"
     f"⚖️ Risk/Reward:  1:{tp_pct_input/sl_pct_input:.2f}"
 )
+
 
 
 
