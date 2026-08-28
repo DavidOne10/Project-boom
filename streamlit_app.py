@@ -119,43 +119,82 @@ if is_long or is_short:
         st.success(f"✅ **MM OK**: Risk/Reward ottimale. Rischio: `${risk:.2f}` | Rendimento: `${reward:.2f}`")
 
     #     # 🇮🇹 SEZIONE FINECO AUTOMATIZZATA
-    st.write("---")
-    st.subheader("🇮🇹 Livelli Knock-Out Fineco (S&P 500 Indice)")
+    sst.divider()
+st.subheader("🧮 Calcolatore Livelli Fineco (Knock-Out)")
 
-    # Prezzo stimato (SPY x 10)
-    estimated_fineco = round(last_price * 10.0, 1)
-
-    # Input diretto del prezzo Fineco
-    fineco_price_input = st.number_input(
-        "Inserisci la quotazione ATTUALE dell'S&P 500 su Fineco:",
-        value=estimated_fineco,
-        step=0.5,
-        format="%.1f",
-        help="Digita qui il prezzo che vedi su Fineco. L'app ricalcolerà istantaneamente il KO e le distanze esatte."
+# 1. Selezione Asset e Direzione
+col_a, col_d = st.columns(2)
+with col_a:
+    asset_selected = st.selectbox(
+        "Seleziona Asset:",
+        ["S&P 500 (Indice)", "Petrolio WTI", "Oro (Gold)"]
     )
 
-    # Calcolo automatico del Delta (Scarto)
-    delta_offset = fineco_price_input - (last_price * 10.0)
-
-    # Ricalcolo automatico dei livelli KO e TP con il Delta
-    sl_fineco = (sl_price * 10.0) + delta_offset
-    tp_fineco = (tp_price * 10.0) + delta_offset
-
-    # Distanze dinamiche in punti
-    dist_sl_pts = abs(fineco_price_input - sl_fineco)
-    dist_tp_pts = abs(tp_fineco - fineco_price_input)
-
-    # Visualizzazione dinamica e chiara
-    col_f1, col_f2, col_f3 = st.columns(3)
-    col_f1.metric("Prezzo Fineco", f"{fineco_price_input:.1f} pts")
-    col_f2.metric("Distanza KO (Rischio)", f"{dist_sl_pts:.1f} pts")
-    col_f3.metric("Distanza TP (Target)", f"{dist_tp_pts:.1f} pts")
-
-    st.code(
-        f"🔴 BARRIERA KO (Stop Loss):     {sl_fineco:.1f} pts  [Distanza: -{dist_sl_pts:.1f} pts]\n"
-        f"🟢 TARGET PROFIT (Take Profit): {tp_fineco:.1f} pts  [Distanza: +{dist_tp_pts:.1f} pts]\n"
-        f"ℹ️ Delta rilevato (Fineco vs SPY): {delta_offset:+.1f} pts"
+with col_d:
+    direction = st.radio(
+        "Direzione Operativa:",
+        ["⬆️ LONG", "⬇️ SHORT"],
+        horizontal=True
     )
+
+# 2. Input Prezzo e Variazioni Percentuali
+col_p, col_tp, col_sl = st.columns(3)
+
+with col_p:
+    fineco_price = st.number_input(
+        "Prezzo Attuale su Fineco:",
+        value=5800.0 if "S&P" in asset_selected else (70.50 if "Petrolio" in asset_selected else 2500.0),
+        step=0.1,
+        format="%.2f"
+    )
+
+with col_tp:
+    tp_pct_input = st.number_input(
+        "Variazione Target TP (%):",
+        value=1.20,
+        step=0.1,
+        format="%.2f",
+        help="Inserisci la percentuale (+) indicata nel messaggio Telegram"
+    )
+
+with col_sl:
+    sl_pct_input = st.number_input(
+        "Variazione Stop/KO (%):",
+        value=1.00,
+        step=0.1,
+        format="%.2f",
+        help="Inserisci la percentuale (-) indicata nel messaggio Telegram"
+    )
+
+# 3. Calcolo Automatico
+is_long = "LONG" in direction
+
+if is_long:
+    tp_fineco = fineco_price * (1 + (tp_pct_input / 100))
+    sl_fineco = fineco_price * (1 - (sl_pct_input / 100))
+else:
+    tp_fineco = fineco_price * (1 - (tp_pct_input / 100))
+    sl_fineco = fineco_price * (1 + (sl_pct_input / 100))
+
+dist_tp = abs(tp_fineco - fineco_price)
+dist_sl = abs(fineco_price - sl_fineco)
+
+# 4. Dashboard Risultati
+st.markdown("---")
+col_res1, col_res2, col_res3 = st.columns(3)
+
+col_res1.metric("Prezzo Inserito", f"{fineco_price:.2f}")
+col_res2.metric("🎯 TARGET PROFIT", f"{tp_fineco:.2f}", delta=f"{'+' if is_long else '-'}{dist_tp:.2f} pts")
+col_res3.metric("🔴 BARRIERA KO (SL)", f"{sl_fineco:.2f}", delta=f"{'-' if is_long else '+'}{dist_sl:.2f} pts", delta_color="inverse")
+
+st.code(
+    f"📊 RIEPILOGO OPERATIVO FINECO ({asset_selected} - {direction})\n"
+    f"--------------------------------------------------\n"
+    f"🎯 Take Profit: {tp_fineco:.2f}  [Distanza: {dist_tp:.2f}]\n"
+    f"🔴 Barriera KO:  {sl_fineco:.2f}  [Distanza: {dist_sl:.2f}]\n"
+    f"⚖️ Risk/Reward:  1:{tp_pct_input/sl_pct_input:.2f}"
+)
+
 
 
     #     # Gestione Posizione e Pulsanti
