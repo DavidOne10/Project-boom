@@ -1,11 +1,10 @@
 import os
 import requests
 import pandas as pd
+import yfinance as yf
 from datetime import datetime
 import pytz
-from tvdatafeed import TvDatafeed, Interval
 
-# Recupera i Secret configurati su GitHub
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
@@ -18,36 +17,48 @@ def send_telegram(message):
         print(f"❌ Errore Telegram: {e}")
 
 def check_cac40_orb():
-    tv = TvDatafeed()
-    df = tv.get_hist(symbol='PX1', exchange='EURONEXT', interval=Interval.in_15_minute, n_bars=40)
-    
-    if df is None or df.empty:
+    df = yf.download("^FCHI", period="5d", interval="15m", progress=False)
+    if df.empty:
+        print("❌ Nessun dato scaricato.")
         return
 
-    df.index = df.index.tz_localize('UTC').tz_convert('Europe/Rome')
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df.dropna(inplace=True)
+
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC").tz_convert("Europe/Rome")
+    else:
+        df.index = df.index.tz_convert("Europe/Rome")
+
     today = datetime.now(pytz.timezone('Europe/Rome')).date()
-    df_today = df[df.index.date == today]
+    df_today = df[df.index.date == today].copy()
     
     if df_today.empty:
+        print("⚠️ Nessun dato per la giornata odierna.")
         return
 
-    # Range prima candela (09:00 - 09:15 CET)
-    orb_bar = df_today[df_today.index.time == pd.to_datetime('09:00').time()]
+    df_today["Time"] = df_today.index.time
+
+    # Range candela ORB 09:00 CET
+    orb_bar = df_today[df_today["Time"] == pd.to_datetime('09:00').time()]
     if orb_bar.empty:
+        print("⏳ Candela d'apertura delle 09:00 non ancora registrata.")
         return
         
-    orb_high = orb_bar['high'].iloc[0]
-    orb_low = orb_bar['low'].iloc[0]
+    orb_high = orb_bar['High'].iloc[0]
+    orb_low = orb_bar['Low'].iloc[0]
     orb_range = orb_high - orb_low
     
     latest_bar = df_today.iloc[-1]
-    latest_close = latest_bar['close']
+    latest_close = latest_bar['Close']
     latest_time = df_today.index[-1].strftime('%H:%M')
     
     if df_today.index[-1].time() <= pd.to_datetime('09:00').time():
+        print("ℹ️ ORB appena formato, in attesa di breakout.")
         return
 
-    # Segnale Long
     if latest_close > orb_high:
         tp = latest_close + (1.2 * orb_range)
         sl = orb_low
@@ -61,7 +72,6 @@ def check_cac40_orb():
                f"📊 Range ORB 09:00: {orb_low:.2f} — {orb_high:.2f}")
         send_telegram(msg)
         
-    # Segnale Short
     elif latest_close < orb_low:
         tp = latest_close - (1.2 * orb_range)
         sl = orb_high
@@ -74,6 +84,8 @@ def check_cac40_orb():
                f"🛑 Stop Loss: `{sl:.2f}` (-{delta_sl:.2f}%)\n\n"
                f"📊 Range ORB 09:00: {orb_low:.2f} — {orb_high:.2f}")
         send_telegram(msg)
+    else:
+        print(f"😴 Prezzo ({latest_close:.2f}) compreso nel range ORB ({orb_low:.2f} - {orb_high:.2f}). Nessun segnale.")
 
 if __name__ == "__main__":
     check_cac40_orb()
