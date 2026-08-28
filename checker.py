@@ -3,6 +3,18 @@ import sys
 import requests
 import pandas as pd
 import numpy as np
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# --- CONTROLLO ORARIO DI MERCATO (Wall Street 09:30 - 16:00 EST / 15:30 - 22:00 IT) ---
+now_est = datetime.now(ZoneInfo("America/New_York"))
+is_weekday = now_est.weekday() < 5  # Lunedì - Venerdì
+market_open = now_est.replace(hour=9, minute=30, second=0, microsecond=0)
+market_close = now_est.replace(hour=16, minute=0, second=0, microsecond=0)
+
+if len(sys.argv) == 1 and (not is_weekday or not (market_open <= now_est <= market_close)):
+    print(f"🌙 Mercati US chiusi ({now_est.strftime('%H:%M EST')}). Scansione saltata.")
+    sys.exit(0)
 
 # --- CREDENZIALI DA GITHUB SECRETS ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -27,26 +39,25 @@ def send_telegram(message):
     try:
         res = requests.post(url, json=payload, timeout=10)
         if res.status_code == 200:
-            print("✅ Messaggio Telegram inviato con successo!")
+            print("✅ Messaggio Telegram inviato!")
         else:
             print(f"❌ Errore Telegram: {res.text}")
     except Exception as e:
-        print(f"❌ Errore di connessione a Telegram: {e}")
+        print(f"❌ Errore connessione Telegram: {e}")
 
 # --- TEST CONNETTIVITÀ ---
 if len(sys.argv) > 1 and sys.argv[1] == "--test":
     test_msg = (
         "🧪 *TEST TELEGRAM & ALPACA COMPLETO*\n\n"
         "✅ Telegram Token & Chat ID collegati correttamente!\n"
-        "🚀 *Sistema ORB 15m in Real-Time pronto su GitHub Actions.*"
+        "🚀 *Sistema ORB 15m pronto su GitHub Actions.*"
     )
     send_telegram(test_msg)
     sys.exit(0)
 
 def get_alpaca_bars(symbol, timeframe="15Min", limit=200):
-    """Scarica barre in tempo reale da Alpaca Market Data API."""
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
-        print("❌ Manca ALPACA_API_KEY o ALPACA_SECRET_KEY nei Secrets di GitHub!")
+        print("❌ Mancano le API Keys nei Secrets di GitHub!")
         return pd.DataFrame()
 
     headers = {
@@ -70,7 +81,6 @@ def get_alpaca_bars(symbol, timeframe="15Min", limit=200):
     df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close'}, inplace=True)
     return df
 
-# --- MAPPA ASSET REAL-TIME ---
 ASSETS = {
     "S&P 500 (SPY)": "SPY",
     "PETROLIO WTI (USO)": "USO",
@@ -84,7 +94,6 @@ for asset_name, symbol in ASSETS.items():
     if df.empty:
         continue
 
-    # Calcolo Indicatori Tecnici
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
@@ -98,7 +107,6 @@ for asset_name, symbol in ASSETS.items():
     today_date = df['Date'].max()
     today_bars = df[df['Date'] == today_date]
 
-    # Candela ORB 14:30 CET (13:30 UTC / 09:30 EST)
     orb_candle = today_bars[(today_bars['Hour'] == 13) & (today_bars['Minute'] == 30)]
     
     if orb_candle.empty:
@@ -111,9 +119,8 @@ for asset_name, symbol in ASSETS.items():
     atr = orb_candle['ATR'].values[0]
     ema = orb_candle['EMA_200'].values[0]
 
-    # Filtro volatilità minima
     if pd.isna(atr) or orb_range < (0.25 * atr):
-        print(f"⚠️ [{asset_name}] Volatilità dell'ORB troppo contenuta. Sessione scartata.")
+        print(f"⚠️ [{asset_name}] Volatilità dell'ORB contenuta. Sessione scartata.")
         continue
 
     session_bars = today_bars[(today_bars['Hour'] > 13) | ((today_bars['Hour'] == 13) & (today_bars['Minute'] > 30))]
@@ -122,34 +129,40 @@ for asset_name, symbol in ASSETS.items():
 
     latest_bar = session_bars.iloc[-1]
 
-    # SEGNALE LONG CONFERMATO
+    # SEGNALE LONG
     if latest_bar['Close'] > orb_high and latest_bar['Close'] > ema:
         entry = latest_bar['Close']
         tp = entry + (1.2 * orb_range)
         sl = orb_low
         
+        tp_pct = ((tp - entry) / entry) * 100
+        sl_pct = ((entry - sl) / entry) * 100
+        
         msg = (
             f"🚨 *SEGNALE REAL-TIME (ALPACA) — {asset_name}*\n\n"
             f"📈 *Azione:* COMPRA (Breakout ORB Confermato)\n"
             f"📌 *Prezzo Ingresso:* `{entry:.2f}`\n"
-            f"🎯 *Take Profit:* `{tp:.2f}`\n"
-            f"🛡️ *Stop Loss:* `{sl:.2f}`\n\n"
+            f"🎯 *Take Profit:* `{tp:.2f}` (+{tp_pct:.2f}%)\n"
+            f"🛡️ *Stop Loss:* `{sl:.2f}` (-{sl_pct:.2f}%)\n\n"
             f"📊 *Dati Real-time:* Chiusura candela sopra Max ORB ({orb_high:.2f}) e sopra EMA200."
         )
         send_telegram(msg)
 
-    # SEGNALE SHORT CONFERMATO
+    # SEGNALE SHORT
     elif latest_bar['Close'] < orb_low and latest_bar['Close'] < ema:
         entry = latest_bar['Close']
         tp = entry - (1.2 * orb_range)
         sl = orb_high
 
+        tp_pct = ((entry - tp) / entry) * 100
+        sl_pct = ((sl - entry) / entry) * 100
+
         msg = (
             f"🚨 *SEGNALE REAL-TIME (ALPACA) — {asset_name}*\n\n"
             f"📉 *Azione:* VENDI (Breakdown ORB Confermato)\n"
             f"📌 *Prezzo Ingresso:* `{entry:.2f}`\n"
-            f"🎯 *Take Profit:* `{tp:.2f}`\n"
-            f"🛡️ *Stop Loss:* `{sl:.2f}`\n\n"
+            f"🎯 *Take Profit:* `{tp:.2f}` (-{tp_pct:.2f}%)\n"
+            f"🛡️ *Stop Loss:* `{sl:.2f}` (+{sl_pct:.2f}%)\n\n"
             f"📊 *Dati Real-time:* Chiusura candela sotto Min ORB ({orb_low:.2f}) e sotto EMA200."
         )
         send_telegram(msg)
