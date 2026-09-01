@@ -81,6 +81,13 @@ def check_cac40_orb():
     prev_close = float(prev_bar['Close'])
     latest_ema = float(latest_bar['EMA_200'])
     latest_time = df_today.index[-1].strftime('%H:%M')
+        # 🟢 HEARTBEAT: Notifica di avvio alla prima scansione utile (09:15 CET)
+    if latest_time == "09:15":
+        print("🟢 Invio heartbeat di avvio sessione Europa...")
+        send_telegram(f"🟢 *Bot CAC 40 Attivo*\n\n"
+                      f"📊 Range ORB 09:00 registrato: `{orb_low:.2f}` — `{orb_high:.2f}`\n"
+                      f"⚡ In ascolto per eventuali breakout.")
+
     
     if df_today.index[-1].time() <= pd.to_datetime('09:00').time():
         print("ℹ️ ORB appena formato, in attesa di breakout.")
