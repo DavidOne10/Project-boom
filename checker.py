@@ -94,23 +94,23 @@ for asset_name, symbol in ASSETS.items():
     if df.empty:
         continue
 
+    # Convertiamo l'indice direttamente nel fuso orario di New York
+    df.index = df.index.tz_convert("America/New_York")
+
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
     df['ATR'] = np.max(pd.concat([high_low, high_close, low_close], axis=1), axis=1).rolling(14).mean()
 
-    df['Date'] = df.index.date
-    df['Hour'] = df.index.hour
-    df['Minute'] = df.index.minute
+    today_date = df.index.date.max()
+    today_bars = df[df.index.date == today_date]
 
-    today_date = df['Date'].max()
-    today_bars = df[df['Date'] == today_date]
-
-    orb_candle = today_bars[(today_bars['Hour'] == 13) & (today_bars['Minute'] == 30)]
+    # Candela ORB esatta di apertura (09:30 New York)
+    orb_candle = today_bars[(today_bars.index.hour == 9) & (today_bars.index.minute == 30)]
     
     if orb_candle.empty:
-        print(f"🕒 [{asset_name}] Candela ORB 14:30 CET non ancora presente.")
+        print(f"🕒 [{asset_name}] Candela ORB 09:30 EST non ancora presente.")
         continue
 
     orb_high = orb_candle['High'].values[0]
@@ -123,14 +123,16 @@ for asset_name, symbol in ASSETS.items():
         print(f"⚠️ [{asset_name}] Volatilità dell'ORB contenuta. Sessione scartata.")
         continue
 
-    session_bars = today_bars[(today_bars['Hour'] > 13) | ((today_bars['Hour'] == 13) & (today_bars['Minute'] > 30))]
+    session_bars = today_bars[(today_bars.index.hour > 9) | ((today_bars.index.hour == 9) & (today_bars.index.minute > 30))]
     if session_bars.empty:
         continue
 
     latest_bar = session_bars.iloc[-1]
+    # Recuperiamo la chiusura precedente per assicurarci che sia un NUOVO breakout
+    prev_close = session_bars.iloc[-2]['Close'] if len(session_bars) > 1 else orb_candle['Close'].values[0]
 
-    # SEGNALE LONG
-    if latest_bar['Close'] > orb_high and latest_bar['Close'] > ema:
+    # SEGNALE LONG (Attivato SOLO al primo incrocio)
+    if latest_bar['Close'] > orb_high and prev_close <= orb_high and latest_bar['Close'] > ema:
         entry = latest_bar['Close']
         tp = entry + (1.2 * orb_range)
         sl = orb_low
@@ -148,8 +150,8 @@ for asset_name, symbol in ASSETS.items():
         )
         send_telegram(msg)
 
-    # SEGNALE SHORT
-    elif latest_bar['Close'] < orb_low and latest_bar['Close'] < ema:
+    # SEGNALE SHORT (Attivato SOLO al primo incrocio)
+    elif latest_bar['Close'] < orb_low and prev_close >= orb_low and latest_bar['Close'] < ema:
         entry = latest_bar['Close']
         tp = entry - (1.2 * orb_range)
         sl = orb_high
@@ -168,3 +170,4 @@ for asset_name, symbol in ASSETS.items():
         send_telegram(msg)
 
 print("Scansione Real-Time completata.")
+
