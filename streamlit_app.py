@@ -1,7 +1,9 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
 import pytz
+import yfinance as yf
 from datetime import datetime, timedelta
 from alpaca.trading.client import TradingClient
 from alpaca.data.historical import StockHistoricalDataClient
@@ -11,9 +13,9 @@ from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopL
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
 
 # Configurazione pagina
-st.set_page_config(page_title="Trading Bot & Calcolatore", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Trading Bot & Dashboard Diagnostica", page_icon="📈", layout="wide")
 
-st.title("📈 Dashboard Trading & Calcolatore Knock-Out")
+st.title("📈 Dashboard Trading & Monitor Diagnostico")
 
 # --- CREDENZIALI API ALPACA ---
 API_KEY = st.secrets.get("API_KEY", "PKSRPGHTEKXA6KIP4HV6AOEZ5Z")
@@ -35,7 +37,7 @@ except Exception as e:
 # =============================================================================
 # 1. MONITOR & ESECUZIONE ORDINI ALPACA (SPY)
 # =============================================================================
-st.header("⚡ Strategia S&P 500 Intraday (Alpaca)")
+st.header("⚡ Strategia S&P 500 Intraday (Alpaca Direct)")
 
 symbol = "SPY"
 now_est = pd.Timestamp.now(tz=pytz.timezone('US/Eastern'))
@@ -149,11 +151,105 @@ try:
 except Exception as e_market:
     st.error(f"Errore durante l'analisi Alpaca: {e_market}")
 
-if st.button("🔄 Aggiorna Dati Alpaca"):
+# =============================================================================
+# 2. TABELLA DIAGNOSTICA MULTI-ASSET (PERCHÉ NON CI SONO SEGNALI?)
+# =============================================================================
+st.divider()
+st.header("🔍 Diagnostica Strategia ORB (Tutti gli Asset)")
+
+def analyze_asset_status(sym, source, orb_start_hour, orb_start_min, tz_str):
+    tz = pytz.timezone(tz_str)
+    now = datetime.now(tz)
+    
+    try:
+        if source == "ALPACA":
+            req = StockBarsRequest(
+                symbol_or_symbols=sym,
+                timeframe=TimeFrame.Minute,
+                start=now - timedelta(days=2)
+            )
+            res = data_client.get_stock_bars(req)
+            df_raw = res.df.reset_index()
+            df_raw['timestamp'] = pd.to_datetime(df_raw['timestamp']).dt.tz_convert(tz_str)
+            df_raw['Date'] = df_raw['timestamp'].dt.date
+            
+            df_15m = df_raw.groupby('Date').resample('15min', on='timestamp').agg({
+                'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last'
+            }).dropna().reset_index()
+            df_15m.set_index('timestamp', inplace=True)
+        else: # YFINANCE (CAC 40)
+            df_15m = yf.download(sym, period="5d", interval="15m", progress=False)
+            if df_15m.empty:
+                return "⚠️ Errore Dati", "Impossibile scaricare le candele"
+            if isinstance(df_15m.columns, pd.MultiIndex):
+                df_15m.columns = df_15m.columns.get_level_values(0)
+            df_15m.index = df_15m.index.tz_convert(tz_str)
+            df_15m.rename(columns={'Open':'open', 'High':'high', 'Low':'low', 'Close':'close'}, inplace=True)
+
+        # Indicatore EMA 200 e ATR
+        df_15m['EMA_200'] = df_15m['close'].ewm(span=200, adjust=False).mean()
+        hl = df_15m['high'] - df_15m['low']
+        hc = np.abs(df_15m['high'] - df_15m['close'].shift())
+        lc = np.abs(df_15m['low'] - df_15m['close'].shift())
+        df_15m['ATR'] = pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(14).mean()
+
+        today_date = df_15m.index.date.max()
+        today_bars = df_15m[df_15m.index.date == today_date]
+        
+        orb_bar = today_bars[(today_bars.index.hour == orb_start_hour) & (today_bars.index.minute == orb_start_min)]
+        
+        if orb_bar.empty:
+            return "🕒 In Attesa ORB", f"Candela {orb_start_hour:02d}:{orb_start_min:02d} non ancora disponibile"
+
+        orb_h = float(orb_bar['high'].iloc[0])
+        orb_l = float(orb_bar['low'].iloc[0])
+        orb_r = orb_h - orb_l
+        atr_val = float(orb_bar['ATR'].iloc[0])
+
+        last_b = today_bars.iloc[-1]
+        c_price = float(last_b['close'])
+        c_ema = float(last_b['EMA_200'])
+
+        if pd.isna(atr_val) or orb_r < (0.25 * atr_val):
+            return "⚠️ Scartato da ATR", f"Range ORB stretto ({orb_r:.2f} < 25% ATR {atr_val:.2f})"
+        elif c_price > orb_h and c_price <= c_ema:
+            return "❌ Blocco EMA 200", f"Sopra Max ({orb_h:.2f}) ma SOTTO EMA200 ({c_ema:.2f})"
+        elif c_price < orb_l and c_price >= c_ema:
+            return "❌ Blocco EMA 200", f"Sotto Min ({orb_l:.2f}) ma SOPRA EMA200 ({c_ema:.2f})"
+        elif c_price > orb_h and c_price > c_ema:
+            return "🟢 SEGNALE LONG", f"Breakout confermato sopra {orb_h:.2f}"
+        elif c_price < orb_l and c_price < c_ema:
+            return "🔴 SEGNALE SHORT", f"Breakdown confermato sotto {orb_l:.2f}"
+        else:
+            return "⚖️ No Breakout", f"Prezzo ({c_price:.2f}) inside range [{orb_l:.2f} - {orb_h:.2f}]"
+
+    except Exception as ex:
+        return "⚠️ Errore Analisi", str(ex)
+
+diag_assets = [
+    {"Asset": "CAC 40", "Ticker": "^FCHI", "Source": "YFINANCE", "Hour": 9, "Min": 0, "TZ": "Europe/Paris"},
+    {"Asset": "S&P 500 (SPY)", "Ticker": "SPY", "Source": "ALPACA", "Hour": 9, "Min": 30, "TZ": "America/New_York"},
+    {"Asset": "Petrolio (USO)", "Ticker": "USO", "Source": "ALPACA", "Hour": 9, "Min": 30, "TZ": "America/New_York"},
+    {"Asset": "Oro (GLD)", "Ticker": "GLD", "Source": "ALPACA", "Hour": 9, "Min": 30, "TZ": "America/New_York"},
+]
+
+results = []
+for item in diag_assets:
+    st_res, reason = analyze_asset_status(item["Ticker"], item["Source"], item["Hour"], item["Min"], item["TZ"])
+    results.append({
+        "Asset": item["Asset"],
+        "Fonte": item["Source"],
+        "Stato Strategy": st_res,
+        "Diagnosi / Motivo": reason
+    })
+
+st.dataframe(pd.DataFrame(results), use_container_width=True)
+
+if st.button("🔄 Aggiorna Diagnostica e Dati"):
     st.rerun()
 
 # =============================================================================
-# 2. CALCOLATORE LIVELLI FINECO (KNOCK-OUT)
+# 3. CALCOLATORE LIVELLI FINECO (KNOCK-OUT)
 # =============================================================================
 st.divider()
 st.subheader("🧮 Calcolatore Livelli Fineco (Knock-Out)")
