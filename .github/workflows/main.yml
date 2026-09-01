@@ -3,7 +3,8 @@ name: US Session (SPY, WTI, GLD)
 on:
   schedule:
     # 13:30 - 20:00 UTC = 15:30 - 22:00 CEST (Italia)
-    - cron: '15/15 13-20 * * 1-5'
+    - cron: '*/15 7-15 * * 1-5'
+
   workflow_dispatch:
 
 jobs:
