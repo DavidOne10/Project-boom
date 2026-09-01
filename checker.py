@@ -12,12 +12,12 @@ is_weekday = now_est.weekday() < 5  # Lunedì - Venerdì
 market_open = now_est.replace(hour=9, minute=30, second=0, microsecond=0)
 market_close = now_est.replace(hour=16, minute=0, second=0, microsecond=0)
 
-# Saltiamo la scansione se siamo fuori dall'orario di borsa (tranne se lanciamo con --test)
+# Scansione saltata se fuori orario (tranne se in modalità --test)
 if len(sys.argv) == 1 and (not is_weekday or not (market_open <= now_est <= market_close)):
     print(f"🌙 Mercati US chiusi ({now_est.strftime('%H:%M EST')}). Scansione saltata.")
     sys.exit(0)
 
-# --- CREDENZIALI DA GITHUB SECRETS (Supporta sia CHAT_ID che TELEGRAM_CHAT_ID) ---
+# --- CREDENZIALI DA GITHUB SECRETS ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID")
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
@@ -28,7 +28,7 @@ ALPACA_BASE_URL = "https://data.alpaca.markets/v2"
 def send_telegram(message):
     """Invia un messaggio formattato su Telegram."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print(f"⚠️ Credenziali Telegram non trovate (TELEGRAM_TOKEN o CHAT_ID). Messaggio simulato:\n{message}")
+        print(f"⚠️ Credenziali Telegram non trovate. Messaggio simulato:\n{message}")
         return
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -65,7 +65,6 @@ def get_alpaca_bars(symbol, timeframe="15Min", limit=500):
         "APCA-API-KEY-ID": ALPACA_API_KEY,
         "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY
     }
-    # Impostato feed=iex per compatibilità con l'account Alpaca Free
     url = f"{ALPACA_BASE_URL}/stocks/bars?symbols={symbol}&timeframe={timeframe}&limit={limit}&feed=iex"
     
     try:
@@ -85,7 +84,7 @@ def get_alpaca_bars(symbol, timeframe="15Min", limit=500):
         df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close'}, inplace=True)
         return df
     except Exception as e:
-        print(f"❌ Eccezione durante il recupero dati Alpaca per {symbol}: {e}")
+        print(f"❌ Eccezione recupero dati per {symbol}: {e}")
         return pd.DataFrame()
 
 ASSETS = {
@@ -97,12 +96,10 @@ ASSETS = {
 print("1. Avvio scansione REAL-TIME tramite Alpaca Data API...")
 
 for asset_name, symbol in ASSETS.items():
-    # Richiediamo 500 candele per garantire una EMA 200 accurata
     df = get_alpaca_bars(symbol, timeframe="15Min", limit=500)
     if df.empty:
         continue
 
-    # Convertiamo l'indice direttamente nel fuso orario di New York
     df.index = df.index.tz_convert("America/New_York")
 
     # Calcolo Indicatori
@@ -138,11 +135,18 @@ for asset_name, symbol in ASSETS.items():
     latest_bar = session_bars.iloc[-1]
     latest_close = float(latest_bar['Close'])
     latest_ema = float(latest_bar['EMA_200'])
-    
-    # Recuperiamo la chiusura precedente per la deduplicazione
+    latest_time = session_bars.index[-1].strftime('%H:%M')
+
+    # 🟢 HEARTBEAT: Notifica di avvio alla prima scansione utile (09:45 EST / 15:45 IT)
+    if latest_time == "09:45" and symbol == "SPY":
+        print("🟢 Invio heartbeat di avvio sessione USA...")
+        send_telegram("🟢 *Bot USA Attivo (SPY, USO, GLD)*\n\n"
+                      "📊 Candela d'apertura 09:30 EST registrata.\n"
+                      "⚡ Scansione in corso per la sessione americana.")
+
     prev_close = float(session_bars.iloc[-2]['Close']) if len(session_bars) > 1 else float(orb_candle['Close'].values[0])
 
-    # --- SEGNALE LONG (Attivato SOLO al primo incrocio sopra EMA200 attuale) ---
+    # SEGNALE LONG
     if latest_close > orb_high and prev_close <= orb_high:
         if latest_close > latest_ema:
             entry = latest_close
@@ -162,9 +166,9 @@ for asset_name, symbol in ASSETS.items():
             )
             send_telegram(msg)
         else:
-            print(f"❌ [{asset_name}] Breakout LONG bloccato: Prezzo ({latest_close:.2f}) sotto EMA200 ({latest_ema:.2f}).")
+            print(f"❌ [{asset_name}] Breakout LONG bloccato da EMA200.")
 
-    # --- SEGNALE SHORT (Attivato SOLO al primo incrocio sotto EMA200 attuale) ---
+    # SEGNALE SHORT
     elif latest_close < orb_low and prev_close >= orb_low:
         if latest_close < latest_ema:
             entry = latest_close
@@ -184,8 +188,8 @@ for asset_name, symbol in ASSETS.items():
             )
             send_telegram(msg)
         else:
-            print(f"❌ [{asset_name}] Breakdown SHORT bloccato: Prezzo ({latest_close:.2f}) sopra EMA200 ({latest_ema:.2f}).")
+            print(f"❌ [{asset_name}] Breakdown SHORT bloccato da EMA200.")
     else:
-        print(f"😴 [{asset_name}] Nessun nuovo segnale. Prezzo ({latest_close:.2f}) nel range o alert già inviato.")
+        print(f"😴 [{asset_name}] Nessun nuovo segnale alle {latest_time} EST.")
 
 print("Scansione Real-Time completata.")
