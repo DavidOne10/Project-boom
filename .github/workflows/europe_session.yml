@@ -3,7 +3,8 @@ name: Europe Session (CAC 40)
 on:
   schedule:
     # 07:15 - 15:30 UTC = 09:15 - 17:30 CEST (Italia)
-    - cron: '15/15 7-15 * * 1-5'
+    - cron: '*/15 7-15 * * 1-5'
+
   workflow_dispatch:
 
 jobs:
