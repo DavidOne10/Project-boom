@@ -12,13 +12,14 @@ is_weekday = now_est.weekday() < 5  # Lunedì - Venerdì
 market_open = now_est.replace(hour=9, minute=30, second=0, microsecond=0)
 market_close = now_est.replace(hour=16, minute=0, second=0, microsecond=0)
 
+# Saltiamo la scansione se siamo fuori dall'orario di borsa (tranne se lanciamo con --test)
 if len(sys.argv) == 1 and (not is_weekday or not (market_open <= now_est <= market_close)):
     print(f"🌙 Mercati US chiusi ({now_est.strftime('%H:%M EST')}). Scansione saltata.")
     sys.exit(0)
 
-# --- CREDENZIALI DA GITHUB SECRETS ---
+# --- CREDENZIALI DA GITHUB SECRETS (Supporta sia CHAT_ID che TELEGRAM_CHAT_ID) ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+TELEGRAM_CHAT_ID = os.environ.get("CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID")
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
 
@@ -27,7 +28,7 @@ ALPACA_BASE_URL = "https://data.alpaca.markets/v2"
 def send_telegram(message):
     """Invia un messaggio formattato su Telegram."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print(f"⚠️ Credenziali Telegram non trovate. Messaggio simulato:\n{message}")
+        print(f"⚠️ Credenziali Telegram non trovate (TELEGRAM_TOKEN o CHAT_ID). Messaggio simulato:\n{message}")
         return
     
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -55,7 +56,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "--test":
     send_telegram(test_msg)
     sys.exit(0)
 
-def get_alpaca_bars(symbol, timeframe="15Min", limit=200):
+def get_alpaca_bars(symbol, timeframe="15Min", limit=500):
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         print("❌ Mancano le API Keys nei Secrets di GitHub!")
         return pd.DataFrame()
@@ -64,22 +65,28 @@ def get_alpaca_bars(symbol, timeframe="15Min", limit=200):
         "APCA-API-KEY-ID": ALPACA_API_KEY,
         "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY
     }
-    url = f"{ALPACA_BASE_URL}/stocks/bars?symbols={symbol}&timeframe={timeframe}&limit={limit}&feed=sip"
+    # Impostato feed=iex per compatibilità con l'account Alpaca Free
+    url = f"{ALPACA_BASE_URL}/stocks/bars?symbols={symbol}&timeframe={timeframe}&limit={limit}&feed=iex"
     
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        print(f"❌ Errore download Alpaca per {symbol}: {response.text}")
-        return pd.DataFrame()
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            print(f"❌ Errore download Alpaca per {symbol}: {response.text}")
+            return pd.DataFrame()
 
-    data = response.json().get("bars", {}).get(symbol, [])
-    if not data:
-        return pd.DataFrame()
+        data = response.json().get("bars", {}).get(symbol, [])
+        if not data:
+            print(f"⚠️ Nessun dato da Alpaca per {symbol}.")
+            return pd.DataFrame()
 
-    df = pd.DataFrame(data)
-    df['t'] = pd.to_datetime(df['t'])
-    df.set_index('t', inplace=True)
-    df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close'}, inplace=True)
-    return df
+        df = pd.DataFrame(data)
+        df['t'] = pd.to_datetime(df['t'])
+        df.set_index('t', inplace=True)
+        df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close'}, inplace=True)
+        return df
+    except Exception as e:
+        print(f"❌ Eccezione durante il recupero dati Alpaca per {symbol}: {e}")
+        return pd.DataFrame()
 
 ASSETS = {
     "S&P 500 (SPY)": "SPY",
@@ -90,13 +97,15 @@ ASSETS = {
 print("1. Avvio scansione REAL-TIME tramite Alpaca Data API...")
 
 for asset_name, symbol in ASSETS.items():
-    df = get_alpaca_bars(symbol, timeframe="15Min", limit=150)
+    # Richiediamo 500 candele per garantire una EMA 200 accurata
+    df = get_alpaca_bars(symbol, timeframe="15Min", limit=500)
     if df.empty:
         continue
 
     # Convertiamo l'indice direttamente nel fuso orario di New York
     df.index = df.index.tz_convert("America/New_York")
 
+    # Calcolo Indicatori
     df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
@@ -113,14 +122,13 @@ for asset_name, symbol in ASSETS.items():
         print(f"🕒 [{asset_name}] Candela ORB 09:30 EST non ancora presente.")
         continue
 
-    orb_high = orb_candle['High'].values[0]
-    orb_low = orb_candle['Low'].values[0]
+    orb_high = float(orb_candle['High'].values[0])
+    orb_low = float(orb_candle['Low'].values[0])
     orb_range = orb_high - orb_low
-    atr = orb_candle['ATR'].values[0]
-    ema = orb_candle['EMA_200'].values[0]
+    atr = float(orb_candle['ATR'].values[0])
 
     if pd.isna(atr) or orb_range < (0.25 * atr):
-        print(f"⚠️ [{asset_name}] Volatilità dell'ORB contenuta. Sessione scartata.")
+        print(f"⚠️ [{asset_name}] Volatilità dell'ORB contenuta ({orb_range:.2f} < 25% ATR {atr:.2f}). Sessione scartata.")
         continue
 
     session_bars = today_bars[(today_bars.index.hour > 9) | ((today_bars.index.hour == 9) & (today_bars.index.minute > 30))]
@@ -128,46 +136,56 @@ for asset_name, symbol in ASSETS.items():
         continue
 
     latest_bar = session_bars.iloc[-1]
-    # Recuperiamo la chiusura precedente per assicurarci che sia un NUOVO breakout
-    prev_close = session_bars.iloc[-2]['Close'] if len(session_bars) > 1 else orb_candle['Close'].values[0]
+    latest_close = float(latest_bar['Close'])
+    latest_ema = float(latest_bar['EMA_200'])
+    
+    # Recuperiamo la chiusura precedente per la deduplicazione
+    prev_close = float(session_bars.iloc[-2]['Close']) if len(session_bars) > 1 else float(orb_candle['Close'].values[0])
 
-    # SEGNALE LONG (Attivato SOLO al primo incrocio)
-    if latest_bar['Close'] > orb_high and prev_close <= orb_high and latest_bar['Close'] > ema:
-        entry = latest_bar['Close']
-        tp = entry + (1.2 * orb_range)
-        sl = orb_low
-        
-        tp_pct = ((tp - entry) / entry) * 100
-        sl_pct = ((entry - sl) / entry) * 100
-        
-        msg = (
-            f"🚨 *SEGNALE REAL-TIME (ALPACA) — {asset_name}*\n\n"
-            f"📈 *Azione:* COMPRA (Breakout ORB Confermato)\n"
-            f"📌 *Prezzo Ingresso:* `{entry:.2f}`\n"
-            f"🎯 *Take Profit:* `{tp:.2f}` (+{tp_pct:.2f}%)\n"
-            f"🛡️ *Stop Loss:* `{sl:.2f}` (-{sl_pct:.2f}%)\n\n"
-            f"📊 *Dati Real-time:* Chiusura candela sopra Max ORB ({orb_high:.2f}) e sopra EMA200."
-        )
-        send_telegram(msg)
+    # --- SEGNALE LONG (Attivato SOLO al primo incrocio sopra EMA200 attuale) ---
+    if latest_close > orb_high and prev_close <= orb_high:
+        if latest_close > latest_ema:
+            entry = latest_close
+            tp = entry + (1.2 * orb_range)
+            sl = orb_low
+            
+            tp_pct = ((tp - entry) / entry) * 100
+            sl_pct = ((entry - sl) / entry) * 100
+            
+            msg = (
+                f"🚨 *SEGNALE REAL-TIME (ALPACA) — {asset_name}*\n\n"
+                f"📈 *Azione:* COMPRA (Breakout ORB Confermato)\n"
+                f"📌 *Prezzo Ingresso:* `{entry:.2f}`\n"
+                f"🎯 *Take Profit (1.2x):* `{tp:.2f}` (+{tp_pct:.2f}%)\n"
+                f"🛡️ *Stop Loss:* `{sl:.2f}` (-{sl_pct:.2f}%)\n\n"
+                f"📊 *Dati Real-time:* Chiusura sopra Max ORB ({orb_high:.2f}) e sopra EMA200 ({latest_ema:.2f})."
+            )
+            send_telegram(msg)
+        else:
+            print(f"❌ [{asset_name}] Breakout LONG bloccato: Prezzo ({latest_close:.2f}) sotto EMA200 ({latest_ema:.2f}).")
 
-    # SEGNALE SHORT (Attivato SOLO al primo incrocio)
-    elif latest_bar['Close'] < orb_low and prev_close >= orb_low and latest_bar['Close'] < ema:
-        entry = latest_bar['Close']
-        tp = entry - (1.2 * orb_range)
-        sl = orb_high
+    # --- SEGNALE SHORT (Attivato SOLO al primo incrocio sotto EMA200 attuale) ---
+    elif latest_close < orb_low and prev_close >= orb_low:
+        if latest_close < latest_ema:
+            entry = latest_close
+            tp = entry - (1.2 * orb_range)
+            sl = orb_high
 
-        tp_pct = ((entry - tp) / entry) * 100
-        sl_pct = ((sl - entry) / entry) * 100
+            tp_pct = ((entry - tp) / entry) * 100
+            sl_pct = ((sl - entry) / entry) * 100
 
-        msg = (
-            f"🚨 *SEGNALE REAL-TIME (ALPACA) — {asset_name}*\n\n"
-            f"📉 *Azione:* VENDI (Breakdown ORB Confermato)\n"
-            f"📌 *Prezzo Ingresso:* `{entry:.2f}`\n"
-            f"🎯 *Take Profit:* `{tp:.2f}` (-{tp_pct:.2f}%)\n"
-            f"🛡️ *Stop Loss:* `{sl:.2f}` (+{sl_pct:.2f}%)\n\n"
-            f"📊 *Dati Real-time:* Chiusura candela sotto Min ORB ({orb_low:.2f}) e sotto EMA200."
-        )
-        send_telegram(msg)
+            msg = (
+                f"🚨 *SEGNALE REAL-TIME (ALPACA) — {asset_name}*\n\n"
+                f"📉 *Azione:* VENDI (Breakdown ORB Confermato)\n"
+                f"📌 *Prezzo Ingresso:* `{entry:.2f}`\n"
+                f"🎯 *Take Profit (1.2x):* `{tp:.2f}` (-{tp_pct:.2f}%)\n"
+                f"🛡️ *Stop Loss:* `{sl:.2f}` (+{sl_pct:.2f}%)\n\n"
+                f"📊 *Dati Real-time:* Chiusura sotto Min ORB ({orb_low:.2f}) e sotto EMA200 ({latest_ema:.2f})."
+            )
+            send_telegram(msg)
+        else:
+            print(f"❌ [{asset_name}] Breakdown SHORT bloccato: Prezzo ({latest_close:.2f}) sopra EMA200 ({latest_ema:.2f}).")
+    else:
+        print(f"😴 [{asset_name}] Nessun nuovo segnale. Prezzo ({latest_close:.2f}) nel range o alert già inviato.")
 
 print("Scansione Real-Time completata.")
-
