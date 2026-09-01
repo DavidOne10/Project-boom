@@ -1,6 +1,7 @@
 streamlit
-alpaca-py
 pandas
 numpy
 pytz
-tzdata
+requests
+yfinance
+alpaca-py
