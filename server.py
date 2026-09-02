@@ -11,25 +11,34 @@ def home():
     return "🟢 Bot ORB Attivo 24/7", 200
 
 def run_flask():
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
+def execute_scans():
+    print(f"\n⏰ [{datetime.now().strftime('%H:%M:%S')}] Avvio scansione...", flush=True)
+    os.system("python cac40_checker.py")
+    os.system("python checker.py")
+
 def precision_loop():
+    # 1. Scansione immediata all'avvio
+    execute_scans()
+
     while True:
         now = datetime.now()
-        # Calcola i minuti mancanti al prossimo blocco da 15 minuti
-        minutes_to_add = 15 - (now.minute % 15)
-        # Calcola la prossima scansione (:00, :15, :30, :45) + 10 sec di tolleranza dati
-        next_time = (now + timedelta(minutes=minutes_to_add)).replace(second=10, microsecond=0)
+        
+        # Trova l'inizio del quarto d'ora corrente (:00, :15, :30, :45)
+        base_minute = (now.minute // 15) * 15
+        target_time = now.replace(minute=base_minute, second=10, microsecond=0)
 
-        sleep_seconds = max((next_time - now).total_seconds(), 5)
+        # Se lo spacco dei :10 di questo quarto d'ora è passato, punta al prossimo
+        if target_time <= now:
+            target_time += timedelta(minutes=15)
+
+        sleep_seconds = (target_time - now).total_seconds()
         time.sleep(sleep_seconds)
 
-        print(f"⏰ [{datetime.now().strftime('%H:%M:%S')}] Avvio scansione...")
-        
-        # Esecuzione script Europa e USA (verifica solo che i nomi dei file .py su GitHub siano questi)
-        os.system("python cac40_checker.py")
-        os.system("python checker.py")
+        # 2. Scansione ad ogni spacco di 15 minuti
+        execute_scans()
 
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
