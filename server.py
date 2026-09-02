@@ -1,7 +1,7 @@
 import os
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask
 
 app = Flask(__name__)
@@ -17,18 +17,17 @@ def run_flask():
 def precision_loop():
     while True:
         now = datetime.now()
-        # Calcola i secondi alla prossima candela a 15 min (+ 10 sec di tolleranza)
-        next_minute = (now.minute // 15 + 1) * 15
-        if next_minute == 60:
-            next_time = now.replace(hour=(now.hour + 1) % 24, minute=0, second=10, microsecond=0)
-        else:
-            next_time = now.replace(minute=next_minute, second=10, microsecond=0)
+        # Calcola i minuti mancanti al prossimo blocco da 15 minuti
+        minutes_to_add = 15 - (now.minute % 15)
+        # Calcola la prossima scansione (:00, :15, :30, :45) + 10 sec di tolleranza dati
+        next_time = (now + timedelta(minutes=minutes_to_add)).replace(second=10, microsecond=0)
 
         sleep_seconds = max((next_time - now).total_seconds(), 5)
         time.sleep(sleep_seconds)
 
         print(f"⏰ [{datetime.now().strftime('%H:%M:%S')}] Avvio scansione...")
-        # Esegue i tuoi script identici a prima
+        
+        # Esecuzione script Europa e USA (verifica solo che i nomi dei file .py su GitHub siano questi)
         os.system("python cac40_checker.py")
         os.system("python checker.py")
 
