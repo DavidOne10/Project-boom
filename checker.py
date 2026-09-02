@@ -190,6 +190,6 @@ for asset_name, symbol in ASSETS.items():
         else:
             print(f"❌ [{asset_name}] Breakdown SHORT bloccato da EMA200.")
     else:
-        print(f"😴 [{asset_name}] Nessun nuovo segnale alle {latest_time} EST.")
+        print(f"😴 [{asset_name}] Nessun nuovo segnale alle {latest_time} EST.") 
 
 print("Scansione Real-Time completata.")
