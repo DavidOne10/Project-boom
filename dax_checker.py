@@ -6,6 +6,8 @@ import yfinance as yf
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+STATE_FILE = "dax_sent.txt"
+
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
@@ -45,6 +47,17 @@ def check_dax_strategy():
     date_str = str(last_row['Date'])[:10]
     
     if close < sma20 and rsi < 35 and is_down:
+        # Controllo anti-spam: verifica se abbiamo già inviato il segnale per questa data
+        last_sent_date = ""
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, "r") as f:
+                last_sent_date = f.read().strip()
+                
+        if last_sent_date == date_str:
+            print(f"[{date_str}] DAX: Segnale già notificato in precedenza per questa settimana.")
+            return
+
+        # Invio notifica e scrittura dello stato
         msg = (
             f"🇪🇺 **SEGNALE LONG DAX 3X** 🇪🇺\n\n"
             f"📅 Data Chiusura: {date_str}\n"
@@ -53,9 +66,11 @@ def check_dax_strategy():
             f"🎯 *Parametri:* Stop Loss -5% | Take Profit +9%"
         )
         send_telegram_message(msg)
+        
+        with open(STATE_FILE, "w") as f:
+            f.write(date_str)
     else:
         print(f"[{date_str}] DAX: Nessun segnale attivo.")
 
 if __name__ == "__main__":
     check_dax_strategy()
-
