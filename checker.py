@@ -80,6 +80,10 @@ def get_alpaca_bars(symbol, timeframe="15Min", limit=500):
 
         df = pd.DataFrame(data)
         df['t'] = pd.to_datetime(df['t'])
+        
+        # 🛡️ FIX DI SICUREZZA: Manteniamo o creiamo la colonna 'timestamp' per compatibilità totale
+        df['timestamp'] = df['t']
+        
         df.set_index('t', inplace=True)
         df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close'}, inplace=True)
         return df
