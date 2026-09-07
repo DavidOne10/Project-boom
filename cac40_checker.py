@@ -1,90 +1,73 @@
 import os
-import argparse
 import requests
+import pandas as pd
 from datetime import datetime
 import pytz
 
-# --- CREDENZIALI TELEGRAM ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID") or os.getenv("TELEGRAM_CHAT_ID")
+# Configurazione API Twelve Data
+TWELVE_DATA_API_KEY = "37f7b0457f1847a390480b9d1dec5bc7"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-def send_telegram(message):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("⚠️ Secret Telegram mancanti (TELEGRAM_TOKEN o CHAT_ID).")
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
-    try:
-        res = requests.post(url, json=payload, timeout=10)
-        if res.status_code == 200:
-            print("✅ Alert Telegram inviato con successo!")
-        else:
-            print(f"❌ Errore API Telegram: {res.text}")
-    except Exception as e:
-        print(f"❌ Errore connessione Telegram: {e}")
+def send_telegram_msg(msg):
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
 
-def process_signal(action, price, sl, tp, orb_high=None, orb_low=None, ema=None):
-    tz = pytz.timezone("Europe/Rome")
-    now_eu = datetime.now(tz)
-    latest_time = now_eu.strftime('%H:%M')
-
-    act_upper = action.upper()
+def check_cac40():
+    tz = pytz.timezone("Europe/Paris")
+    now = datetime.now(tz)
     
-    # Gestione Segnale LONG / BUY
-    if act_upper in ["LONG", "BUY"]:
-        delta_tp = ((tp - price) / price) * 100
-        delta_sl = ((price - sl) / price) * 100
-        
-        orb_str = f"`{orb_low:.2f}` — `{orb_high:.2f}`" if (orb_low and orb_high) else "Registrato TV"
-        ema_str = f"`{ema:.2f}`" if ema else "Superata (OK)"
-
-        msg = (f"🚨 *BREAKOUT CAC 40 — LONG (REAL-TIME)*\n\n"
-               f"⏰ Candela: {latest_time} CET\n"
-               f"📈 Ingresso Spot: `{price:.2f}`\n"
-               f"🎯 Target Profit: `{tp:.2f}` (+{delta_tp:.2f}%)\n"
-               f"🛑 Stop Loss: `{sl:.2f}` (-{delta_sl:.2f}%)\n\n"
-               f"📊 Range ORB 09:00: {orb_str}\n"
-               f"📈 EMA 200: {ema_str}")
-
-    # Gestione Segnale SHORT / SELL
-    elif act_upper in ["SHORT", "SELL"]:
-        delta_tp = ((price - tp) / price) * 100
-        delta_sl = ((sl - price) / price) * 100
-
-        orb_str = f"`{orb_low:.2f}` — `{orb_high:.2f}`" if (orb_low and orb_high) else "Registrato TV"
-        ema_str = f"`{ema:.2f}`" if ema else "Sotto (OK)"
-
-        msg = (f"🚨 *BREAKOUT CAC 40 — SHORT (REAL-TIME)*\n\n"
-               f"⏰ Candela: {latest_time} CET\n"
-               f"📉 Ingresso Spot: `{price:.2f}`\n"
-               f"🎯 Target Profit: `{tp:.2f}` (-{delta_tp:.2f}%)\n"
-               f"🛑 Stop Loss: `{sl:.2f}` (+{delta_sl:.2f}%)\n\n"
-               f"📊 Range ORB 09:00: {orb_str}\n"
-               f"📉 EMA 200: {ema_str}")
-    else:
-        print(f"⚠️ Azione non riconosciuta: {action}")
+    # Esegui solo in orario di mercato EU (09:00 - 17:30)
+    if not (9 <= now.hour < 17 or (now.hour == 17 and now.minute <= 30)):
+        print("🌙 Mercato CAC 40 chiuso. Scansione saltata.", flush=True)
         return
 
-    send_telegram(msg)
+    print("🔎 Check CAC 40 via Twelve Data...", flush=True)
+    
+    # Ticker CAC 40 su Twelve Data (PX1)
+    url = f"https://api.twelvedata.com/time_series?symbol=PX1&interval=15min&outputsize=30&apikey={TWELVE_DATA_API_KEY}"
+    res = requests.get(url).json()
+
+    if "values" not in res:
+        print(f"❌ Errore API Twelve Data: {res.get('message', 'Risposta non valida')}", flush=True)
+        return
+
+    # Preparazione Dati
+    df = pd.DataFrame(res["values"])
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df = df.sort_values("datetime").reset_index(drop=True)
+    
+    for col in ["open", "high", "low", "close"]:
+        df[col] = df[col].astype(float)
+
+    # Candela ORB (09:00 - 09:15 CET)
+    df['time_str'] = df['datetime'].dt.strftime('%H:%M')
+    orb_candle = df[df['time_str'] == '09:00']
+
+    if orb_candle.empty:
+        print("⏳ Candela ORB (09:00) non ancora disponibile.", flush=True)
+        return
+
+    orb_high = orb_candle.iloc[0]["high"]
+    orb_low = orb_candle.iloc[0]["low"]
+    
+    last_candle = df.iloc[-1]
+    close_price = last_candle["close"]
+
+    # Logica Breakout ORB
+    if close_price > orb_high:
+        sl = orb_low
+        tp = close_price + (close_price - sl) * 1.5
+        send_telegram_msg(f"🚀 *SEGNALE LONG CAC 40*\n\nPrezzo: `{close_price}`\nSL: `{sl:.2f}`\nTP: `{tp:.2f}`\nORB High: `{orb_high}`")
+        print("✅ Segnale LONG inviato a Telegram!", flush=True)
+    elif close_price < orb_low:
+        sl = orb_high
+        tp = close_price - (sl - close_price) * 1.5
+        send_telegram_msg(f"🔻 *SEGNALE SHORT CAC 40*\n\nPrezzo: `{close_price}`\nSL: `{sl:.2f}`\nTP: `{tp:.2f}`\nORB Low: `{orb_low}`")
+        print("✅ Segnale SHORT inviato a Telegram!", flush=True)
+    else:
+        print(f"📊 CAC 40 in range. Prezzo: {close_price} | ORB: [{orb_low} - {orb_high}]", flush=True)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CAC40 Signal Receiver via Webhook")
-    parser.add_argument("--action", type=str, required=True, help="BUY/LONG o SELL/SHORT")
-    parser.add_argument("--price", type=float, required=True, help="Prezzo di ingresso")
-    parser.add_argument("--sl", type=float, required=True, help="Stop Loss")
-    parser.add_argument("--tp", type=float, required=True, help="Take Profit")
-    parser.add_argument("--orb_high", type=float, default=None, help="Massimo ORB 09:00")
-    parser.add_argument("--orb_low", type=float, default=None, help="Minimo ORB 09:00")
-    parser.add_argument("--ema", type=float, default=None, help="Valore EMA 200")
-
-    args = parser.parse_args()
-    
-    process_signal(
-        action=args.action,
-        price=args.price,
-        sl=args.sl,
-        tp=args.tp,
-        orb_high=args.orb_high,
-        orb_low=args.orb_low,
-        ema=args.ema
-    )
+    check_cac40()
