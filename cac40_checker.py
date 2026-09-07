@@ -1,8 +1,6 @@
 import os
+import argparse
 import requests
-import pandas as pd
-import numpy as np
-import yfinance as yf
 from datetime import datetime
 import pytz
 
@@ -25,125 +23,68 @@ def send_telegram(message):
     except Exception as e:
         print(f"❌ Errore connessione Telegram: {e}")
 
-def check_cac40_orb():
+def process_signal(action, price, sl, tp, orb_high=None, orb_low=None, ema=None):
     tz = pytz.timezone("Europe/Rome")
     now_eu = datetime.now(tz)
-    is_weekday = now_eu.weekday() < 5
-    market_open = now_eu.replace(hour=9, minute=0, second=0, microsecond=0)
-    market_close = now_eu.replace(hour=17, minute=30, second=0, microsecond=0)
+    latest_time = now_eu.strftime('%H:%M')
 
-    # Scansione saltata se fuori orario (09:00 - 17:30 CET) o nel weekend
-    if not is_weekday or not (market_open <= now_eu <= market_close):
-        print(f"🌙 Mercati EU chiusi ({now_eu.strftime('%H:%M CET')}). Scansione saltata.")
-        return
-
-    # Estensione a 60 giorni per garantire oltre 200 candele per la EMA200
-    df = yf.download("^FCHI", period="60d", interval="15m", progress=False)
-    if df.empty:
-        print("❌ Nessun dato scaricato da Yahoo Finance.")
-        return
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    df.dropna(inplace=True)
-
-    if df.index.tz is None:
-        df.index = df.index.tz_localize("UTC").tz_convert(tz)
-    else:
-        df.index = df.index.tz_convert(tz)
-
-    # Calcolo Indicatori EMA 200 e ATR 14 (con min_periods=1 per evitare NaN)
-    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
-    hl = df['High'] - df['Low']
-    hc = np.abs(df['High'] - df['Close'].shift())
-    lc = np.abs(df['Low'] - df['Close'].shift())
-    df['ATR'] = pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(14, min_periods=1).mean()
-
-    today = now_eu.date()
-    df_today = df[df.index.date == today].copy()
+    act_upper = action.upper()
     
-    if len(df_today) < 2:
-        print("⚠️ Candele odierne insufficienti.")
-        return
-
-    df_today["Time"] = df_today.index.time
-
-    # Range candela ORB 09:00 CET
-    orb_bar = df_today[df_today["Time"] == pd.to_datetime('09:00').time()]
-    if orb_bar.empty:
-        print("⏳ Candela d'apertura delle 09:00 non ancora registrata.")
-        return
+    # Gestione Segnale LONG / BUY
+    if act_upper in ["LONG", "BUY"]:
+        delta_tp = ((tp - price) / price) * 100
+        delta_sl = ((price - sl) / price) * 100
         
-    orb_high = float(orb_bar['High'].iloc[0])
-    orb_low = float(orb_bar['Low'].iloc[0])
-    orb_range = orb_high - orb_low
-    atr_val = float(orb_bar['ATR'].iloc[0])
+        orb_str = f"`{orb_low:.2f}` — `{orb_high:.2f}`" if (orb_low and orb_high) else "Registrato TV"
+        ema_str = f"`{ema:.2f}`" if ema else "Superata (OK)"
 
-    # Filtro Volatilità (Range ORB > 25% ATR)
-    if pd.isna(atr_val) or orb_range < (0.25 * atr_val):
-        print(f"⚠️ Sessione scartata: Range ORB ({orb_range:.2f}) < 25% ATR ({atr_val:.2f}).")
-        return
+        msg = (f"🚨 *BREAKOUT CAC 40 — LONG (REAL-TIME)*\n\n"
+               f"⏰ Candela: {latest_time} CET\n"
+               f"📈 Ingresso Spot: `{price:.2f}`\n"
+               f"🎯 Target Profit: `{tp:.2f}` (+{delta_tp:.2f}%)\n"
+               f"🛑 Stop Loss: `{sl:.2f}` (-{delta_sl:.2f}%)\n\n"
+               f"📊 Range ORB 09:00: {orb_str}\n"
+               f"📈 EMA 200: {ema_str}")
 
-    latest_bar = df_today.iloc[-1]
-    prev_bar = df_today.iloc[-2]
-    
-    latest_close = float(latest_bar['Close'])
-    prev_close = float(prev_bar['Close'])
-    latest_ema = float(latest_bar['EMA_200'])
-    latest_time = df_today.index[-1].strftime('%H:%M')
+    # Gestione Segnale SHORT / SELL
+    elif act_upper in ["SHORT", "SELL"]:
+        delta_tp = ((price - tp) / price) * 100
+        delta_sl = ((sl - price) / price) * 100
 
-    # 🟢 HEARTBEAT: Notifica di avvio alla prima scansione utile (09:15 CET)
-    if latest_time == "09:15":
-        print("🟢 Invio heartbeat di avvio sessione Europa...")
-        send_telegram(f"🟢 *Bot CAC 40 Attivo*\n\n"
-                      f"📊 Range ORB 09:00 registrato: `{orb_low:.2f}` — `{orb_high:.2f}`\n"
-                      f"⚡ In ascolto per eventuali breakout.")
+        orb_str = f"`{orb_low:.2f}` — `{orb_high:.2f}`" if (orb_low and orb_high) else "Registrato TV"
+        ema_str = f"`{ema:.2f}`" if ema else "Sotto (OK)"
 
-    if df_today.index[-1].time() <= pd.to_datetime('09:00').time():
-        print("ℹ️ ORB appena formato, in attesa di breakout.")
-        return
-
-    # --- LOGICA BREAKOUT CON DEDUPLICAZIONE E FILTRO EMA 200 ---
-
-    # Breakout LONG
-    if latest_close > orb_high and prev_close <= orb_high:
-        if latest_close > latest_ema:
-            tp = latest_close + (1.2 * orb_range)
-            sl = orb_low
-            delta_tp = ((tp - latest_close) / latest_close) * 100
-            delta_sl = ((latest_close - sl) / latest_close) * 100
-            msg = (f"🚨 *BREAKOUT CAC 40 — LONG*\n\n"
-                   f"⏰ Candela: {latest_time} CET\n"
-                   f"📈 Ingresso Spot: `{latest_close:.2f}`\n"
-                   f"🎯 Target Profit (1.2x): `{tp:.2f}` (+{delta_tp:.2f}%)\n"
-                   f"🛑 Stop Loss: `{sl:.2f}` (-{delta_sl:.2f}%)\n\n"
-                   f"📊 Range ORB 09:00: {orb_low:.2f} — {orb_high:.2f}\n"
-                   f"📈 EMA 200: {latest_ema:.2f}")
-            send_telegram(msg)
-        else:
-            print(f"❌ Breakout LONG bloccato: Prezzo ({latest_close:.2f}) sotto EMA200 ({latest_ema:.2f}).")
-
-    # Breakdown SHORT
-    elif latest_close < orb_low and prev_close >= orb_low:
-        if latest_close < latest_ema:
-            tp = latest_close - (1.2 * orb_range)
-            sl = orb_high
-            delta_tp = ((latest_close - tp) / latest_close) * 100
-            delta_sl = ((sl - latest_close) / latest_close) * 100
-            msg = (f"🚨 *BREAKOUT CAC 40 — SHORT*\n\n"
-                   f"⏰ Candela: {latest_time} CET\n"
-                   f"📉 Ingresso Spot: `{latest_close:.2f}`\n"
-                   f"🎯 Target Profit (1.2x): `{tp:.2f}` (-{delta_tp:.2f}%)\n"
-                   f"🛑 Stop Loss: `{sl:.2f}` (+{delta_sl:.2f}%)\n\n"
-                   f"📊 Range ORB 09:00: {orb_low:.2f} — {orb_high:.2f}\n"
-                   f"📉 EMA 200: {latest_ema:.2f}")
-            send_telegram(msg)
-        else:
-            print(f"❌ Breakdown SHORT bloccato: Prezzo ({latest_close:.2f}) sopra EMA200 ({latest_ema:.2f}).")
-            
+        msg = (f"🚨 *BREAKOUT CAC 40 — SHORT (REAL-TIME)*\n\n"
+               f"⏰ Candela: {latest_time} CET\n"
+               f"📉 Ingresso Spot: `{price:.2f}`\n"
+               f"🎯 Target Profit: `{tp:.2f}` (-{delta_tp:.2f}%)\n"
+               f"🛑 Stop Loss: `{sl:.2f}` (+{delta_sl:.2f}%)\n\n"
+               f"📊 Range ORB 09:00: {orb_str}\n"
+               f"📉 EMA 200: {ema_str}")
     else:
-        print(f"😴 Nessun nuovo segnale alle {latest_time}. Prezzo ({latest_close:.2f}) dentro il range o breakout già notificato.")
+        print(f"⚠️ Azione non riconosciuta: {action}")
+        return
+
+    send_telegram(msg)
 
 if __name__ == "__main__":
-    check_cac40_orb()
+    parser = argparse.ArgumentParser(description="CAC40 Signal Receiver via Webhook")
+    parser.add_argument("--action", type=str, required=True, help="BUY/LONG o SELL/SHORT")
+    parser.add_argument("--price", type=float, required=True, help="Prezzo di ingresso")
+    parser.add_argument("--sl", type=float, required=True, help="Stop Loss")
+    parser.add_argument("--tp", type=float, required=True, help="Take Profit")
+    parser.add_argument("--orb_high", type=float, default=None, help="Massimo ORB 09:00")
+    parser.add_argument("--orb_low", type=float, default=None, help="Minimo ORB 09:00")
+    parser.add_argument("--ema", type=float, default=None, help="Valore EMA 200")
+
+    args = parser.parse_args()
+    
+    process_signal(
+        action=args.action,
+        price=args.price,
+        sl=args.sl,
+        tp=args.tp,
+        orb_high=args.orb_high,
+        orb_low=args.orb_low,
+        ema=args.ema
+    )
