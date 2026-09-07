@@ -9,7 +9,7 @@ app = Flask(__name__)
 # Route per far rispondere il server a Render e UptimeRobot
 @app.route('/')
 def home():
-    return "🟢 Bot ORB Attivo 24/7 (EU & USA)", 200
+    return "🟢 Bot Attivo 24/7 (EU & USA)", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -21,6 +21,8 @@ def execute_scans():
     os.system("python cac40_checker.py")
     # 2. Scansione USA (SPY, GLD, USO via Alpaca)
     os.system("python checker.py")
+    # 3. Scansione DAX 3x (Strategia Settimanale)
+    os.system("python dax_checker.py")
 
 def precision_loop():
     # Prima esecuzione immediata all'avvio
