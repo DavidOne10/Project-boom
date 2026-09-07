@@ -4,7 +4,6 @@ import pandas as pd
 from datetime import datetime
 import pytz
 
-# Configurazione API Twelve Data
 TWELVE_DATA_API_KEY = "37f7b0457f1847a390480b9d1dec5bc7"
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -18,22 +17,20 @@ def check_cac40():
     tz = pytz.timezone("Europe/Paris")
     now = datetime.now(tz)
     
-    # Esegui solo in orario di mercato EU (09:00 - 17:30)
     if not (9 <= now.hour < 17 or (now.hour == 17 and now.minute <= 30)):
         print("🌙 Mercato CAC 40 chiuso. Scansione saltata.", flush=True)
         return
 
     print("🔎 Check CAC 40 via Twelve Data...", flush=True)
     
-    # Ticker CAC 40 su Twelve Data (PX1)
-    url = f"https://api.twelvedata.com/time_series?symbol=PX1&interval=15min&outputsize=30&apikey={TWELVE_DATA_API_KEY}"
+    # Ticker corretto CAC 40 su Twelve Data: FCHI
+    url = f"https://api.twelvedata.com/time_series?symbol=FCHI&interval=15min&outputsize=30&apikey={TWELVE_DATA_API_KEY}"
     res = requests.get(url).json()
 
     if "values" not in res:
         print(f"❌ Errore API Twelve Data: {res.get('message', 'Risposta non valida')}", flush=True)
         return
 
-    # Preparazione Dati
     df = pd.DataFrame(res["values"])
     df["datetime"] = pd.to_datetime(df["datetime"])
     df = df.sort_values("datetime").reset_index(drop=True)
@@ -41,7 +38,6 @@ def check_cac40():
     for col in ["open", "high", "low", "close"]:
         df[col] = df[col].astype(float)
 
-    # Candela ORB (09:00 - 09:15 CET)
     df['time_str'] = df['datetime'].dt.strftime('%H:%M')
     orb_candle = df[df['time_str'] == '09:00']
 
@@ -55,7 +51,6 @@ def check_cac40():
     last_candle = df.iloc[-1]
     close_price = last_candle["close"]
 
-    # Logica Breakout ORB
     if close_price > orb_high:
         sl = orb_low
         tp = close_price + (close_price - sl) * 1.5
