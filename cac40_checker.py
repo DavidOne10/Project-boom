@@ -13,11 +13,13 @@ def send_telegram_msg(msg):
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
 
 def fetch_cac40_realtime():
-    """Recupera le candele del CAC 40 in tempo reale via REST API senza Selenium/Chromedriver."""
-    url = "https://www.boursorama.com/bourse/action/graph/ws/GetChart?symbol=1rPCAC&period=-1"
+    """Recupera le candele del CAC 40 in tempo reale via REST API Indici Boursorama."""
+    # CORRETTO: da /action/ a /indices/cours/
+    url = "https://www.boursorama.com/bourse/indices/cours/graph/ws/GetChart?symbol=1rPCAC&period=-1"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json, text/plain, */*"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.boursorama.com/bourse/indices/cours/1rPCAC/"
     }
     
     try:
@@ -33,7 +35,6 @@ def fetch_cac40_realtime():
             tz = pytz.timezone("Europe/Paris")
             
             for q in quote_list:
-                # Conversione timestamp ms
                 dt = datetime.fromtimestamp(q["d"] / 1000, tz=tz)
                 records.append({
                     "datetime": dt,
