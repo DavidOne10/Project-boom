@@ -1,157 +1,79 @@
 import os
 import requests
 import pandas as pd
-from datetime import datetime
-import pytz
+import yfinance as yf
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-def send_telegram_msg(msg):
-    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
+STATE_FILE = "cac40_sent.txt"
+ISIN_CAC = "IE00B7V0GB87"
 
-def fetch_cac40_realtime():
-    """Recupera le candele del CAC 40 in tempo reale via REST API Indici Boursorama."""
-    # CORRETTO: da /action/ a /indices/cours/
-    url = "https://www.boursorama.com/bourse/indices/cours/graph/ws/GetChart?symbol=1rPCAC&period=-1"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Referer": "https://www.boursorama.com/bourse/indices/cours/1rPCAC/"
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
     }
-    
     try:
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            quote_list = data.get("d", {}).get("quote", [])
-            
-            if not quote_list:
-                return None
-                
-            records = []
-            tz = pytz.timezone("Europe/Paris")
-            
-            for q in quote_list:
-                dt = datetime.fromtimestamp(q["d"] / 1000, tz=tz)
-                records.append({
-                    "datetime": dt,
-                    "price": float(q["c"])
-                })
-                
-            df = pd.DataFrame(records)
-            df['date_str'] = df['datetime'].dt.strftime('%Y-%m-%d')
-            
-            today_str = datetime.now(tz).strftime('%Y-%m-%d')
-            df_today = df[df['date_str'] == today_str].copy()
-            
-            if df_today.empty:
-                return None
-
-            # Resample sui 15 Minuti per costruire le candele OHLC reali
-            df_15m = df_today.set_index('datetime').resample('15min').agg({
-                'price': ['first', 'max', 'min', 'last']
-            }).dropna()
-            
-            df_15m.columns = ['open', 'high', 'low', 'close']
-            df_15m['time_str'] = df_15m.index.strftime('%H:%M')
-            return df_15m.reset_index()
-            
-        else:
-            print(f"⚠️ API risponde con stato: {res.status_code}", flush=True)
+        requests.post(url, json=payload)
     except Exception as e:
-        print(f"⚠️ Errore recupero REST CAC 40: {e}", flush=True)
-        
-    return None
+        print(f"Errore invio Telegram: {e}")
 
-def check_cac40():
-    tz = pytz.timezone("Europe/Paris")
-    now = datetime.now(tz)
+def check_cac40_strategy():
+    df = yf.download("^FCHI", period="1y", interval="1d", progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df.reset_index()
     
-    # Orario Mercato Parigi (09:00 - 17:30 CET)
-    if not (9 <= now.hour < 17 or (now.hour == 17 and now.minute <= 30)):
-        print(f"🌙 Mercato CAC 40 chiuso ({now.strftime('%H:%M')} CET). Scansione saltata.", flush=True)
-        return
-
-    print("⚡ Check CAC 40 Real-Time via REST API...", flush=True)
+    daily_ret = df['Close'].pct_change()
+    lev_ret = (daily_ret * 3.0) - (0.0075 / 252)
+    df['lev_price'] = (1 + lev_ret.fillna(0)).cumprod() * 100
     
-    df = fetch_cac40_realtime()
+    df_w = df.set_index('Date').resample('W').agg({'lev_price': 'last'}).dropna().reset_index()
+    df_w['sma20'] = df_w['lev_price'].rolling(window=20).mean()
     
-    if df is None or df.empty:
-        print("❌ Impossibile recuperare i dati in tempo reale.", flush=True)
-        return
-
-    # Calcolo EMA 200
-    df['ema200'] = df['close'].ewm(span=200, adjust=False).mean()
-
-    # Candela ORB delle 09:00 (apertura)
-    orb_candle = df[df['time_str'] == '09:00']
-
-    if orb_candle.empty:
-        print("⏳ Candela ORB (09:00) non ancora disponibile.", flush=True)
-        return
-
-    orb_high = orb_candle.iloc[0]["high"]
-    orb_low = orb_candle.iloc[0]["low"]
+    delta = df_w['lev_price'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    df_w['rsi'] = 100 - (100 / (1 + (gain / loss)))
+    df_w['is_down'] = df_w['lev_price'].diff() < 0
     
-    last_candle = df.iloc[-1]
-    close_price = last_candle["close"]
-    ema200_val = last_candle["ema200"]
-    candle_time = last_candle["time_str"]
+    last_row = df_w.iloc[-2]
+    close = last_row['lev_price']
+    sma20 = last_row['sma20']
+    rsi = last_row['rsi']
+    is_down = last_row['is_down']
+    date_str = str(last_row['Date'])[:10]
+    
+    if close < sma20 and rsi < 35 and is_down:
+        last_sent_date = ""
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, "r") as f:
+                last_sent_date = f.read().strip()
+                
+        if last_sent_date == date_str:
+            print(f"[{date_str}] CAC40: Segnale già notificato in precedenza per questa settimana.")
+            return
 
-    # Notifica Apertura ORB (09:15 CET)
-    if candle_time == "09:15" and now.minute < 20:
-        msg_start = (
-            f"🟢 *Bot CAC 40 Attivo (Real-Time)*\n\n"
-            f"📊 Range ORB 09:00 registrato: `{orb_low:.2f}` – `{orb_high:.2f}`\n"
-            f"⚡ Monitoraggio breakout attivo."
+        stop_loss = close * 0.95
+        take_profit = close * 1.09
+
+        msg = (
+            f"🇫🇷 **SEGNALE LONG CAC 40 3X** 🇫🇷\n\n"
+            f"📌 *ISIN:* `{ISIN_CAC}`\n"
+            f"📅 Data Chiusura: {date_str}\n"
+            f"💰 Prezzo Simula 3x: {close:.2f}\n"
+            f"📊 SMA20: {sma20:.2f} | RSI: {rsi:.2f}\n\n"
+            f"🎯 *Parametri:* Stop Loss -5% (`{stop_loss:.2f}`) | Take Profit +9% (`{take_profit:.2f}`)"
         )
-        send_telegram_msg(msg_start)
-
-    # Breakout LONG
-    if close_price > orb_high:
-        sl = orb_low
-        risk = close_price - sl
-        tp = close_price + (risk * 1.2)
-        tp_pct = ((tp - close_price) / close_price) * 100
-        sl_pct = ((close_price - sl) / close_price) * 100
+        send_telegram_message(msg)
         
-        msg_long = (
-            f"🚨 *BREAKOUT CAC 40 – LONG (REAL-TIME)*\n\n"
-            f"⏰ Candela: {candle_time} CET\n"
-            f"Ingresso Spot: `{close_price:.2f}`\n"
-            f"🎯 Target Profit (1.2x): `{tp:.2f}` (+{tp_pct:.2f}%)\n"
-            f"🛑 Stop Loss: `{sl:.2f}` (-{sl_pct:.2f}%)\n\n"
-            f"📊 Range ORB 09:00: `{orb_low:.2f}` – `{orb_high:.2f}`\n"
-            f"📈 EMA 200: `{ema200_val:.2f}`"
-        )
-        send_telegram_msg(msg_long)
-        print("✅ Segnale LONG REAL-TIME inviato a Telegram!", flush=True)
-
-    # Breakout SHORT
-    elif close_price < orb_low:
-        sl = orb_high
-        risk = sl - close_price
-        tp = close_price - (risk * 1.2)
-        tp_pct = ((close_price - tp) / close_price) * 100
-        sl_pct = ((sl - close_price) / close_price) * 100
-        
-        msg_short = (
-            f"🚨 *BREAKOUT CAC 40 – SHORT (REAL-TIME)*\n\n"
-            f"⏰ Candela: {candle_time} CET\n"
-            f"Ingresso Spot: `{close_price:.2f}`\n"
-            f"🎯 Target Profit (1.2x): `{tp:.2f}` (-{tp_pct:.2f}%)\n"
-            f"🛑 Stop Loss: `{sl:.2f}` (+{sl_pct:.2f}%)\n\n"
-            f"📊 Range ORB 09:00: `{orb_low:.2f}` – `{orb_high:.2f}`\n"
-            f"📉 EMA 200: `{ema200_val:.2f}`"
-        )
-        send_telegram_msg(msg_short)
-        print("✅ Segnale SHORT REAL-TIME inviato a Telegram!", flush=True)
-
+        with open(STATE_FILE, "w") as f:
+            f.write(date_str)
     else:
-        print(f"📊 CAC 40 Live: {close_price:.2f} | ORB: [{orb_low:.2f} - {orb_high:.2f}] | Candela: {candle_time}", flush=True)
+        print(f"[{date_str}] CAC40: Nessun segnale attivo.")
 
 if __name__ == "__main__":
-    check_cac40()
+    check_cac40_strategy()
