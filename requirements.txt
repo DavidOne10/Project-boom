@@ -7,3 +7,4 @@ yfinance
 alpaca-py
 flask
 tzdata
+git+https://github.com/baselsm/tvdatafeed.git
