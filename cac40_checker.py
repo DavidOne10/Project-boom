@@ -3,7 +3,6 @@ import requests
 import pandas as pd
 from datetime import datetime
 import pytz
-from tvDatafeed import TvDatafeed, Interval
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -14,34 +13,57 @@ def send_telegram_msg(msg):
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
 
 def fetch_cac40_realtime():
-    """Recupera le candele del CAC 40 a 15 minuti in TEMPO REALE via TradingView WebSocket."""
+    """Recupera le candele del CAC 40 in tempo reale via REST API senza Selenium/Chromedriver."""
+    url = "https://www.boursorama.com/bourse/action/graph/ws/GetChart?symbol=1rPCAC&period=-1"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json, text/plain, */*"
+    }
+    
     try:
-        # Inizializzazione senza login (accesso pubblico websocket)
-        tv = TvDatafeed()
-        # Symbol 'PX1' su exchange 'TVC' = CAC 40 Index Real-Time
-        df = tv.get_hist(symbol='PX1', exchange='TVC', interval=Interval.in_15_minute, n_bars=40)
-        
-        if df is None or df.empty:
-            return None
-
-        tz = pytz.timezone("Europe/Paris")
-        
-        # Gestione fuso orario
-        if df.index.tzinfo is None:
-            df.index = df.index.tz_localize('UTC').tz_convert(tz)
-        else:
-            df.index = df.index.tz_convert(tz)
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            quote_list = data.get("d", {}).get("quote", [])
             
-        df['time_str'] = df.index.strftime('%H:%M')
-        df['date_str'] = df.index.strftime('%Y-%m-%d')
-        
-        today_str = datetime.now(tz).strftime('%Y-%m-%d')
-        df_today = df[df['date_str'] == today_str].copy()
-        
-        return df_today
+            if not quote_list:
+                return None
+                
+            records = []
+            tz = pytz.timezone("Europe/Paris")
+            
+            for q in quote_list:
+                # Conversione timestamp ms
+                dt = datetime.fromtimestamp(q["d"] / 1000, tz=tz)
+                records.append({
+                    "datetime": dt,
+                    "price": float(q["c"])
+                })
+                
+            df = pd.DataFrame(records)
+            df['date_str'] = df['datetime'].dt.strftime('%Y-%m-%d')
+            
+            today_str = datetime.now(tz).strftime('%Y-%m-%d')
+            df_today = df[df['date_str'] == today_str].copy()
+            
+            if df_today.empty:
+                return None
+
+            # Resample sui 15 Minuti per costruire le candele OHLC reali
+            df_15m = df_today.set_index('datetime').resample('15min').agg({
+                'price': ['first', 'max', 'min', 'last']
+            }).dropna()
+            
+            df_15m.columns = ['open', 'high', 'low', 'close']
+            df_15m['time_str'] = df_15m.index.strftime('%H:%M')
+            return df_15m.reset_index()
+            
+        else:
+            print(f"⚠️ API risponde con stato: {res.status_code}", flush=True)
     except Exception as e:
-        print(f"⚠️ Errore recupero TradingView WebSocket: {e}", flush=True)
-        return None
+        print(f"⚠️ Errore recupero REST CAC 40: {e}", flush=True)
+        
+    return None
 
 def check_cac40():
     tz = pytz.timezone("Europe/Paris")
@@ -52,7 +74,7 @@ def check_cac40():
         print(f"🌙 Mercato CAC 40 chiuso ({now.strftime('%H:%M')} CET). Scansione saltata.", flush=True)
         return
 
-    print("⚡ Check CAC 40 Real-Time via TradingView WebSocket...", flush=True)
+    print("⚡ Check CAC 40 Real-Time via REST API...", flush=True)
     
     df = fetch_cac40_realtime()
     
@@ -73,13 +95,12 @@ def check_cac40():
     orb_high = orb_candle.iloc[0]["high"]
     orb_low = orb_candle.iloc[0]["low"]
     
-    # Ultima candela chiusa
     last_candle = df.iloc[-1]
     close_price = last_candle["close"]
     ema200_val = last_candle["ema200"]
     candle_time = last_candle["time_str"]
 
-    # Notifica Apertura ORB (mandata a 09:15 appena chiude la prima candela)
+    # Notifica Apertura ORB (09:15 CET)
     if candle_time == "09:15" and now.minute < 20:
         msg_start = (
             f"🟢 *Bot CAC 40 Attivo (Real-Time)*\n\n"
