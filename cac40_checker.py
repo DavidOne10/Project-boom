@@ -1,8 +1,17 @@
 import os
+import sys
+import subprocess
 import requests
 import pandas as pd
 from datetime import datetime
 import pytz
+
+# Auto-installazione di cloudscraper per bypassare la protezione Cloudflare di Euronext
+try:
+    import cloudscraper
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "cloudscraper"])
+    import cloudscraper
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -13,20 +22,27 @@ def send_telegram_msg(msg):
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"})
 
 def fetch_euronext_data():
-    # URL ed Header completi per bypassare il blocco Cloud/Datacenter di Render
     url = "https://live.euronext.com/intraday_chart/getChartData/FR0003500008-XPAR/15m"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": "https://live.euronext.com/en/product/indices/FR0003500008-XPAR",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
     
-    response = requests.get(url, headers=headers, timeout=10)
-    if response.status_code == 200:
-        data = response.json()
-        if data and isinstance(data, list):
-            return pd.DataFrame(data)
+    # Inizializza lo scraper anti-Cloudflare
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        }
+    )
+    
+    try:
+        res = scraper.get(url, timeout=15)
+        if res.status_code == 200:
+            data = res.json()
+            if data and isinstance(data, list):
+                return pd.DataFrame(data)
+        print(f"⚠️ Euronext risponde con codice stato: {res.status_code}", flush=True)
+    except Exception as e:
+        print(f"⚠️ Errore durante il recupero con cloudscraper: {e}", flush=True)
+        
     return None
 
 def check_cac40():
@@ -38,13 +54,13 @@ def check_cac40():
         print("🌙 Mercato CAC 40 chiuso. Scansione saltata.", flush=True)
         return
 
-    print("🔎 Check CAC 40 Real-Time via Euronext...", flush=True)
+    print("🔎 Check CAC 40 Real-Time via Euronext (Bypass Cloudflare)...", flush=True)
     
     try:
         df = fetch_euronext_data()
         
         if df is None or df.empty:
-            print("❌ Impossibile recuperare i dati da Euronext (Blocco IP o risposta vuota).", flush=True)
+            print("❌ Impossibile recuperare i dati da Euronext.", flush=True)
             return
 
         df['time'] = pd.to_datetime(df['time'])
@@ -71,7 +87,7 @@ def check_cac40():
         ema200_val = last_candle["ema200"]
         candle_time = last_candle["time_str"]
 
-        # Notifica delle 09:15 CET
+        # Notifica di apertura ORB (09:15 CET)
         if candle_time == "09:15" and now.minute < 30:
             msg_start = (
                 f"🟢 *Bot CAC 40 Attivo*\n\n"
