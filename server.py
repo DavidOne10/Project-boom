@@ -16,9 +16,9 @@ def run_flask():
 
 def execute_scans():
     print(f"\n⏰ [{datetime.now().strftime('%H:%M:%S')}] Avvio scansioni automatiche...", flush=True)
-    # Scansione Europa (Twelve Data)
+    # Scansione Europa (Euronext Real-Time)
     os.system("python cac40_checker.py")
-    # Scansione USA (Alpaca)
+    # Scansione USA (Alpaca API)
     os.system("python checker.py")
 
 def precision_loop():
