@@ -1,324 +1,380 @@
 import os
+import requests
 import streamlit as st
 import pandas as pd
 import numpy as np
 import pytz
 import yfinance as yf
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from alpaca.trading.client import TradingClient
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopLossRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
 
-st.set_page_config(page_title="Trading Dashboard ORB 15m", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Dashboard Trading — USA ORB & UE Swing 3X", page_icon="📈", layout="wide")
 
-st.title("📈 Dashboard ORB 15m — USA & UE")
-
-# --- CREDENZIALI ALPACA ---
-API_KEY = st.secrets.get("API_KEY", "PKSRPGHTEKXA6KIP4HV6AOEZ5Z")
-SECRET_KEY = st.secrets.get("SECRET_KEY", "7ZdgT6TyiEW5wkxSJqqpPHJL5qnxmJTMpoTk8PQ6cihw")
-
-@st.cache_resource
-def get_clients():
-    trading = TradingClient(API_KEY, SECRET_KEY, paper=True)
-    data = StockHistoricalDataClient(API_KEY, SECRET_KEY)
-    return trading, data
-
-try:
-    trading_client, data_client = get_clients()
-    account = trading_client.get_account()
-    st.sidebar.success(f"Connesso ad Alpaca Paper!\nSaldo: ${float(account.equity):,.2f}")
-except Exception as e:
-    st.sidebar.error(f"Errore Alpaca: {e}")
+st.title("📈 Trading Dashboard — USA Real-Time & UE Swing 3X")
 
 # =============================================================================
-# ENGINE INDICATORI
+# CREDENZIALI & SETUP
 # =============================================================================
-def process_indicators(df_raw, tz_str):
-    df_raw['timestamp'] = pd.to_datetime(df_raw['timestamp']).dt.tz_convert(tz_str)
-    df_raw['Date'] = df_raw['timestamp'].dt.date
-    
-    df_15m = df_raw.groupby('Date').resample('15min', on='timestamp').agg({
-        'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'
-    }).dropna().reset_index()
-    
-    daily = df_15m.groupby('Date').agg({'high': 'max', 'low': 'min', 'close': 'last'})
-    daily['pivot'] = (daily['high'] + daily['low'] + daily['close']) / 3
-    daily['R1'] = (2 * daily['pivot']) - daily['low']
-    daily['S1'] = (2 * daily['pivot']) - daily['high']
-    
-    df_15m = df_15m.merge(daily[['R1', 'S1']].shift(1), left_on='Date', right_index=True, how='left')
-    
-    df_15m['EMA_200'] = df_15m['close'].ewm(span=200, adjust=False).mean()
-    df_15m['SMA_50'] = df_15m['close'].rolling(window=50).mean()
-    
-    delta = df_15m['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    df_15m['RSI'] = 100 - (100 / (1 + (gain / loss)))
-    
-    hl = df_15m['high'] - df_15m['low']
-    hc = np.abs(df_15m['high'] - df_15m['close'].shift())
-    lc = np.abs(df_15m['low'] - df_15m['close'].shift())
-    df_15m['ATR'] = pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(14, min_periods=1).mean()
-    
-    df_15m.set_index('timestamp', inplace=True)
-    return df_15m
+ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY") or st.secrets.get("API_KEY", "")
+ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY") or st.secrets.get("SECRET_KEY", "")
+ALPACA_BASE_URL = "https://data.alpaca.markets/v2"
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("CHAT_ID") or st.secrets.get("TELEGRAM_CHAT_ID", "")
+
+# Connessione Alpaca Trading (se credenziali presenti)
+trading_client = None
+if ALPACA_API_KEY and ALPACA_SECRET_KEY:
+    try:
+        trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
+        acc = trading_client.get_account()
+        st.sidebar.success(f"Connesso ad Alpaca Paper!\nSaldo: ${float(acc.equity):,.2f}")
+    except Exception as e:
+        st.sidebar.error(f"Errore Alpaca: {e}")
 
 # =============================================================================
-# 🇺🇸 SEZIONE USA - TABELLA PANORAMICA
+# 🇺🇸 SEZIONE 1: MERCATI USA (CHECKER ORB 15M CON FILTRO R1/S1)
 # =============================================================================
-st.header("🇺🇸 Mercati USA — Panoramica Segnali")
+st.header("🇺🇸 Mercati USA — Breakout ORB 15m Real-Time")
 
-usa_tickers = {
-    "SPY": "S&P 500 (SPY)",
-    "USO": "Petrolio WTI (USO)",
-    "GLD": "Oro (GLD)"
-}
+def get_alpaca_bars_df(symbol, timeframe="15Min", limit=500):
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        return pd.DataFrame()
 
-now_est = pd.Timestamp.now(tz=pytz.timezone('US/Eastern'))
+    headers = {"APCA-API-KEY-ID": ALPACA_API_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY}
+    url = f"{ALPACA_BASE_URL}/stocks/bars?symbols={symbol}&timeframe={timeframe}&limit={limit}&feed=iex"
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200: return pd.DataFrame()
+        data = response.json().get("bars", {}).get(symbol, [])
+        if not data: return pd.DataFrame()
 
-usa_data_dict = {}
+        df = pd.DataFrame(data)
+        df['t'] = pd.to_datetime(df['t'])
+        df.set_index('t', inplace=True)
+        df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close'}, inplace=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+usa_assets = {"S&P 500 (SPY)": "SPY", "PETROLIO WTI (USO)": "USO", "ORO (GLD)": "GLD"}
+
+usa_results_dict = {}
 usa_table_rows = []
 
-for ticker, name in usa_tickers.items():
-    try:
-        req = StockBarsRequest(
-            symbol_or_symbols=ticker,
-            timeframe=TimeFrame.Minute,
-            start=now_est - timedelta(days=5)
-        )
-        res = data_client.get_stock_bars(req)
-        df_usa = process_indicators(res.df.reset_index(), 'US/Eastern')
-        today_usa = df_usa[df_usa['Date'] == now_est.date()].copy()
-        
-        if today_usa.empty:
-            usa_table_rows.append({"Asset": name, "Ticker": ticker, "Prezzo ($)": "-", "Stato Segnale": "⚠️ No Dati Oggi", "Dettagli": "Nessuna candela disponibile"})
-            continue
+for asset_name, symbol in usa_assets.items():
+    df = get_alpaca_bars_df(symbol, timeframe="15Min", limit=500)
+    
+    if df.empty:
+        usa_table_rows.append({"Asset": asset_name, "Ticker": symbol, "Prezzo": "-", "Stato Segnale": "⚠️ No Dati", "Dettagli": "Impossibile scaricare candele da Alpaca"})
+        continue
+
+    df.index = df.index.tz_convert("America/New_York")
+    df['date'] = df.index.date
+
+    # --- CALCOLO PIVOT POINTS (S/R giorno precedente) ---
+    daily = df.groupby('date').agg({'High': 'max', 'Low': 'min', 'Close': 'last'})
+    daily['pivot'] = (daily['High'] + daily['Low'] + daily['Close']) / 3
+    daily['R1'] = (2 * daily['pivot']) - daily['Low']
+    daily['S1'] = (2 * daily['pivot']) - daily['High']
+    df = df.merge(daily[['R1', 'S1']].shift(1), left_on='date', right_index=True, how='left')
+
+    # --- INDICATORI ---
+    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+    df['SMA_50'] = df['Close'].rolling(window=50).mean()
+    
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+
+    high_low = df['High'] - df['Low']
+    high_close = np.abs(df['High'] - df['Close'].shift())
+    low_close = np.abs(df['Low'] - df['Close'].shift())
+    df['ATR'] = np.max(pd.concat([high_low, high_close, low_close], axis=1), axis=1).rolling(14, min_periods=1).mean()
+
+    today_date = df.index.date.max()
+    today_bars = df[df.index.date == today_date]
+
+    if today_bars.empty:
+        usa_table_rows.append({"Asset": asset_name, "Ticker": symbol, "Prezzo": "-", "Stato Segnale": "🕒 In Attesa Sessione", "Dettagli": "Nessuna candela per la data odierna"})
+        continue
+
+    orb_candle = today_bars[(today_bars.index.hour == 9) & (today_bars.index.minute == 30)]
+    if orb_candle.empty:
+        last_c = float(today_bars.iloc[-1]['Close'])
+        usa_table_rows.append({"Asset": asset_name, "Ticker": symbol, "Prezzo": f"${last_c:.2f}", "Stato Segnale": "🕒 In Attesa ORB", "Dettagli": "Candela delle 09:30 EST non ancora chiusa"})
+        continue
+
+    orb_high, orb_low = float(orb_candle['High'].values[0]), float(orb_candle['Low'].values[0])
+    orb_range, atr = orb_high - orb_low, float(orb_candle['ATR'].values[0])
+    last_c = float(today_bars.iloc[-1]['Close'])
+
+    if pd.isna(atr) or orb_range < (0.25 * atr):
+        usa_table_rows.append({"Asset": asset_name, "Ticker": symbol, "Prezzo": f"${last_c:.2f}", "Stato Segnale": "⚠️ ATR Scarto", "Dettagli": f"ORB Range (${orb_range:.2f}) < 25% ATR (${0.25*atr:.2f})"})
+        continue
+
+    session_bars = today_bars[(today_bars.index.hour > 9) | ((today_bars.index.hour == 9) & (today_bars.index.minute >= 45))]
+    if session_bars.empty:
+        usa_table_rows.append({"Asset": asset_name, "Ticker": symbol, "Prezzo": f"${last_c:.2f}", "Stato Segnale": "🕒 In Attesa 09:45", "Dettagli": "Sessione operativa non ancora avviata"})
+        continue
+
+    first_signal_bar_idx, signal_type = None, None
+    block_reason = None
+
+    for i in range(len(session_bars)):
+        bar = session_bars.iloc[i]
+        c = float(bar['Close'])
+        prev_c = float(session_bars.iloc[i-1]['Close']) if i > 0 else float(orb_candle['Close'].values[0])
+        ema, sma = float(bar['EMA_200']), float(bar['SMA_50']) if not pd.isna(bar['SMA_50']) else c
+        rsi = float(bar['RSI']) if not pd.isna(bar['RSI']) else 50
+
+        is_long = (c > orb_high) and (prev_c <= orb_high) and (c > ema) and (c > sma) and (45 <= rsi <= 75)
+        is_short = (c < orb_low) and (prev_c >= orb_low) and (c < ema) and (c < sma) and (25 <= rsi <= 55)
+
+        if is_long or is_short:
+            r1, s1 = float(bar['R1']), float(bar['S1'])
+            sl = orb_low if is_long else orb_high
+            risk = (c - sl) if is_long else (sl - c)
             
-        orb_c = today_usa[(today_usa.index.hour == 9) & (today_usa.index.minute == 30)]
-        if orb_c.empty:
-            usa_table_rows.append({"Asset": name, "Ticker": ticker, "Prezzo ($)": "-", "Stato Segnale": "🕒 In Attesa ORB", "Dettagli": "Candela 09:30 EST non chiusa"})
-            continue
-
-        orb_h, orb_l = float(orb_c['high'].iloc[0]), float(orb_c['low'].iloc[0])
-        orb_r, atr_v = orb_h - orb_l, float(orb_c['ATR'].iloc[0])
-        
-        last_b = today_usa.iloc[-1]
-        c_price = float(last_b['close'])
-        ema_200 = float(last_b['EMA_200'])
-        sma_50 = float(last_b['SMA_50']) if not pd.isna(last_b['SMA_50']) else c_price
-        rsi_val = float(last_b['RSI']) if not pd.isna(last_b['RSI']) else 50.0
-        r1_v, s1_v = float(last_b['R1']), float(last_b['S1'])
-        
-        prev_c = float(today_usa.iloc[-2]['close']) if len(today_usa) > 1 else orb_h
-        is_long = (c_price > orb_h) and (prev_c <= orb_h) and (c_price > ema_200) and (c_price > sma_50) and (45 <= rsi_val <= 75)
-        is_short = (c_price < orb_l) and (prev_c >= orb_l) and (c_price < ema_200) and (c_price < sma_50) and (25 <= rsi_val <= 55)
-
-        sig_type = "NONE"
-        status_str = "⚖️ In Range"
-        detail_str = f"RSI: {rsi_val:.1f} | EMA200: ${ema_200:.2f}"
-        sl_p, tp_p = 0.0, 0.0
-        risk_pct, tp_pct = 0.0, 0.0
-
-        if orb_r < (0.25 * atr_v):
-            status_str = "⚠️ ATR Scarto"
-            detail_str = f"Range orario stretto (${orb_r:.2f} < ${0.25*atr_v:.2f})"
-        elif is_long or is_short:
-            sig_type = "LONG" if is_long else "SHORT"
-            sl_p = round(orb_l if is_long else orb_h, 2)
-            risk_val = abs(c_price - sl_p)
-            tp_p = round(c_price + (1.3 * risk_val) if is_long else c_price - (1.3 * risk_val), 2)
-            
-            risk_pct = (risk_val / c_price) * 100
-            tp_pct = risk_pct * 1.3
+            if risk <= 0: continue
+            tp = c + (1.3 * risk) if is_long else c - (1.3 * risk)
 
             blocked = False
-            if is_long and not pd.isna(r1_v) and (c_price < r1_v < tp_p): blocked = True
-            if is_short and not pd.isna(s1_v) and (tp_p < s1_v < c_price): blocked = True
+            if is_long and not pd.isna(r1) and (c < r1 < tp): blocked = True
+            if is_short and not pd.isna(s1) and (tp < s1 < c): blocked = True
 
-            if blocked:
-                status_str = "❌ BLOCCATO"
-                detail_str = "Ostacolo statico R1/S1 tra prezzo e TP"
-                sig_type = "BLOCKED"
+            if not blocked:
+                first_signal_bar_idx = i
+                signal_type = "LONG" if is_long else "SHORT"
+                break
             else:
-                status_str = "🟢 LONG" if is_long else "🔴 SHORT"
-                detail_str = f"Entry: ${c_price:.2f} | TP (1.3x): ${tp_p:.2f} | SL: ${sl_p:.2f}"
+                block_reason = "R1 (Resistenza)" if is_long else "S1 (Supporto)"
 
-        usa_table_rows.append({
-            "Asset": name,
-            "Ticker": ticker,
-            "Prezzo ($)": f"{c_price:.2f}",
-            "Stato Segnale": status_str,
-            "Dettagli": detail_str
-        })
+    # Costruzione stato
+    last_bar = session_bars.iloc[-1]
+    curr_price = float(last_bar['Close'])
+    last_time_str = session_bars.index[-1].strftime('%H:%M')
 
-        usa_data_dict[ticker] = {
-            "name": name,
-            "price": c_price,
-            "signal": sig_type,
-            "status_str": status_str,
+    if first_signal_bar_idx is not None:
+        sig_bar = session_bars.iloc[first_signal_bar_idx]
+        sig_time_str = session_bars.index[first_signal_bar_idx].strftime('%H:%M')
+        entry_p = float(sig_bar['Close'])
+        sl_p = orb_low if signal_type == "LONG" else orb_high
+        risk_v = abs(entry_p - sl_p)
+        tp_p = entry_p + (1.3 * risk_v) if signal_type == "LONG" else entry_p - (1.3 * risk_v)
+        
+        risk_pct = (risk_v / entry_p) * 100
+        tp_pct = risk_pct * 1.3
+
+        is_current = (first_signal_bar_idx == len(session_bars) - 1)
+        status_label = f"🟢 {signal_type} ATTIVO!" if is_current else f"🔵 {signal_type} PASSATO ({sig_time_str})"
+        detail_label = f"Ingresso: ${entry_p:.2f} | TP (1.3x): ${tp_p:.2f} (+{tp_pct:.2f}%) | SL: ${sl_p:.2f} (-{risk_pct:.2f}%)"
+
+        usa_results_dict[symbol] = {
+            "name": asset_name,
+            "signal": signal_type,
+            "is_current": is_current,
+            "entry": entry_p,
             "sl": sl_p,
             "tp": tp_p,
             "risk_pct": risk_pct,
             "tp_pct": tp_pct,
+            "status_str": status_label
         }
+    elif block_reason:
+        status_label = "❌ BLOCCATO"
+        detail_label = f"Breakout presente ma ostacolato da {block_reason}"
+        usa_results_dict[symbol] = {"name": asset_name, "signal": "BLOCKED", "status_str": status_label, "risk_pct": 0, "tp_pct": 0}
+    else:
+        status_label = "⚖️ In Range"
+        detail_label = f"Nessun breakout | RSI: {last_bar['RSI']:.1f} | ORB Range: ${orb_range:.2f}"
+        usa_results_dict[symbol] = {"name": asset_name, "signal": "NONE", "status_str": status_label, "risk_pct": 0, "tp_pct": 0}
 
-    except Exception as ex:
-        usa_table_rows.append({"Asset": name, "Ticker": ticker, "Prezzo ($)": "-", "Stato Segnale": "⚠️ Errore", "Dettagli": str(ex)})
+    usa_table_rows.append({
+        "Asset": asset_name,
+        "Ticker": symbol,
+        "Prezzo ($)": f"${curr_price:.2f}",
+        "Stato Segnale": status_label,
+        "Dettagli Operativi": detail_label
+    })
 
 st.dataframe(pd.DataFrame(usa_table_rows), use_container_width=True)
 
-# =============================================================================
-# SELEZIONE PALLINI (RADIO) & CONVERTITORE FINECO / ALPACA
-# =============================================================================
+# --- CONVERTITORE FINECO & GESTIONE ALPACA ---
 st.divider()
-st.subheader("🎯 Seleziona Asset per Convertitore Fineco & Esecuzione Ordine")
+st.subheader("🎯 Gestione Ordini Alpaca & Convertitore Fineco (USA)")
 
-selected_ticker = st.radio(
-    "Scegli l'asset da gestire con la spunta:",
-    options=list(usa_tickers.keys()),
-    format_func=lambda x: f"{usa_tickers[x]} ({x})",
+selected_symbol = st.radio(
+    "Seleziona l'asset USA da gestire:",
+    options=list(usa_assets.values()),
+    format_func=lambda x: f"{[k for k,v in usa_assets.items() if v==x][0]} ({x})",
     horizontal=True
 )
 
-if selected_ticker in usa_data_dict:
-    asset_info = usa_data_dict[selected_ticker]
+if selected_symbol in usa_results_dict:
+    info = usa_results_dict[selected_symbol]
+    c_col1, c_col2 = st.columns(2)
     
-    col_alp1, col_alp2 = st.columns(2)
-    with col_alp1:
-        st.info(f"**Asset Selezionato:** {asset_info['name']}\n\n**Stato Segnale Alpaca:** {asset_info['status_str']}")
-    
-    with col_alp2:
-        if asset_info['signal'] in ["LONG", "SHORT"]:
-            pos = [p for p in trading_client.get_all_positions() if p.symbol == selected_ticker]
-            if len(pos) > 0:
-                st.warning(f"⚠️ Posizione su {selected_ticker} già aperta su Alpaca.")
-                if st.button(f"🔴 Chiudi Posizione {selected_ticker} su Alpaca", type="primary"):
-                    trading_client.close_position(selected_ticker)
+    with c_col1:
+        st.info(f"**Asset:** {info['name']}\n\n**Stato:** {info['status_str']}")
+
+    with c_col2:
+        if trading_client and info['signal'] in ["LONG", "SHORT"]:
+            positions = [p for p in trading_client.get_all_positions() if p.symbol == selected_symbol]
+            if positions:
+                st.warning(f"⚠️ Posizione su {selected_symbol} già aperta su Alpaca.")
+                if st.button(f"🔴 Chiudi Posizione {selected_symbol}", type="primary"):
+                    trading_client.close_position(selected_symbol)
                     st.rerun()
             else:
-                if st.button(f"🚀 Invia Ordine Simulato su Alpaca per {selected_ticker}", type="primary"):
-                    side = OrderSide.BUY if asset_info['signal'] == "LONG" else OrderSide.SELL
-                    order_data = MarketOrderRequest(
-                        symbol=selected_ticker,
+                if st.button(f"🚀 Ordine Paper Alpaca ({selected_symbol})", type="primary"):
+                    side_val = OrderSide.BUY if info['signal'] == "LONG" else OrderSide.SELL
+                    order_req = MarketOrderRequest(
+                        symbol=selected_symbol,
                         qty=10,
-                        side=side,
+                        side=side_val,
                         time_in_force=TimeInForce.DAY,
                         order_class=OrderClass.BRACKET,
-                        take_profit=TakeProfitRequest(limit_price=asset_info['tp']),
-                        stop_loss=StopLossRequest(stop_price=asset_info['sl'])
+                        take_profit=TakeProfitRequest(limit_price=round(info['tp'], 2)),
+                        stop_loss=StopLossRequest(stop_price=round(info['sl'], 2))
                     )
-                    trading_client.submit_order(order_data)
+                    trading_client.submit_order(order_req)
                     st.balloons()
-                    st.success("✅ Ordine inviato ad Alpaca Paper!")
+                    st.success("✅ Ordine inviato con successo!")
                     st.rerun()
         else:
-            st.caption("Nessun ordine simulato Alpaca disponibile al momento.")
+            st.caption("Nessun ordine automatico disponibile al momento.")
 
-    st.markdown(f"#### 🧮 Convertitore Fineco per {selected_ticker}")
-    
-    default_fineco_prices = {"SPY": 5800.0, "USO": 70.50, "GLD": 2500.0}
+    st.markdown(f"#### 🧮 Convertitore Fineco per **{selected_symbol}**")
+    default_prices = {"SPY": 5800.0, "USO": 70.50, "GLD": 2500.0}
     
     col_f1, col_f2 = st.columns(2)
     with col_f1:
-        fineco_price_input = st.number_input(
-            f"Inserisci il Prezzo Reale di **{selected_ticker}** su Fineco:",
-            value=default_fineco_prices.get(selected_ticker, 100.0),
+        fineco_in = st.number_input(
+            f"Prezzo effettivo dello strumento su Fineco ({selected_symbol}):",
+            value=default_prices.get(selected_symbol, 100.0),
             step=0.1,
             format="%.2f"
         )
-    
     with col_f2:
-        if asset_info['signal'] == "LONG":
-            st.success("Direzione rilevata in automatico: **⬆️ LONG**")
-            current_dir = "LONG"
-        elif asset_info['signal'] == "SHORT":
-            st.error("Direzione rilevata in automatico: **⬇️ SHORT**")
-            current_dir = "SHORT"
+        if info['signal'] == "LONG":
+            st.success("Direzione: **⬆️ LONG**")
+            curr_dir = "LONG"
+        elif info['signal'] == "SHORT":
+            st.error("Direzione: **⬇️ SHORT**")
+            curr_dir = "SHORT"
         else:
-            st.warning("⚠️ Nessun segnale attivo su Alpaca. Selezione manuale per calcolo:")
-            current_dir = st.radio("Direzione da simulare su Fineco:", ["LONG", "SHORT"], horizontal=True)
+            st.warning("⚠️ Nessun segnale attivo. Selezione manuale:")
+            curr_dir = st.radio("Direzione per simulazione:", ["LONG", "SHORT"], horizontal=True)
 
-    calc_risk_pct = asset_info['risk_pct'] if asset_info['risk_pct'] > 0 else 0.50
-    calc_tp_pct = calc_risk_pct * 1.3
+    calc_risk = info['risk_pct'] if info['risk_pct'] > 0 else 0.50
+    calc_tp = info['tp_pct'] if info['tp_pct'] > 0 else calc_risk * 1.3
 
-    if current_dir == "LONG":
-        fineco_tp = fineco_price_input * (1 + (calc_tp_pct / 100))
-        fineco_sl = fineco_price_input * (1 - (calc_risk_pct / 100))
+    if curr_dir == "LONG":
+        f_tp = fineco_in * (1 + (calc_tp / 100))
+        f_sl = fineco_in * (1 - (calc_risk / 100))
     else:
-        fineco_tp = fineco_price_input * (1 - (calc_tp_pct / 100))
-        fineco_sl = fineco_price_input * (1 + (calc_risk_pct / 100))
+        f_tp = fineco_in * (1 - (calc_tp / 100))
+        f_sl = fineco_in * (1 + (calc_risk / 100))
 
-    dist_tp_pts = abs(fineco_tp - fineco_price_input)
-    dist_sl_pts = abs(fineco_price_input - fineco_sl)
-
-    res_c1, res_c2, res_c3 = st.columns(3)
-    res_c1.metric("Prezzo Ingresso Fineco", f"{fineco_price_input:.2f}")
-    res_c2.metric("🎯 TARGET PROFIT FINECO (1.3x)", f"{fineco_tp:.2f}", delta=f"{'+' if current_dir=='LONG' else '-'}{dist_tp_pts:.2f} pts ({calc_tp_pct:.2f}%)")
-    res_c3.metric("🔴 BARRIERA KO / STOP FINECO", f"{fineco_sl:.2f}", delta=f"{'-' if current_dir=='LONG' else '+'}{dist_sl_pts:.2f} pts ({calc_risk_pct:.2f}%)", delta_color="inverse")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Prezzo Ingresso Fineco", f"{fineco_in:.2f}")
+    m2.metric("🎯 TARGET PROFIT FINECO (1.3x)", f"{f_tp:.2f}", delta=f"{calc_tp:.2f}%")
+    m3.metric("🔴 STOP LOSS FINECO", f"{f_sl:.2f}", delta=f"-{calc_risk:.2f}%", delta_color="inverse")
 
 # =============================================================================
-# 🇪🇺 SEZIONE 2: MERCATI UE (RISOLTO PROBLEMA MULTIINDEX YFINANCE)
+# 🇪🇺 SEZIONE 2: MERCATI EUROPEI (CHECKER SWING SETTIMANALE 3X)
 # =============================================================================
 st.divider()
-st.header("🇪🇺 Mercati Europei — Monitoraggio & Diagnostica")
+st.header("🇪🇺 Mercati Europei — Strategy Swing Settimanale ETF 3X")
 
-eu_assets = [
-    {"Asset": "CAC 40", "Ticker": "^FCHI", "Hour": 9, "Min": 0, "TZ": "Europe/Paris"},
-    {"Asset": "DAX 40", "Ticker": "^GDAXI", "Hour": 9, "Min": 0, "TZ": "Europe/Berlin"},
-    {"Asset": "FTSE MIB", "Ticker": "FTSEMIB.MI", "Hour": 9, "Min": 0, "TZ": "Europe/Rome"},
+def check_eu_swing_strategy(ticker, fee_rate, isin_code=None):
+    df = yf.download(ticker, period="1y", interval="1d", progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df.reset_index()
+    
+    daily_ret = df['Close'].pct_change()
+    lev_ret = (daily_ret * 3.0) - (fee_rate / 252)
+    df['lev_price'] = (1 + lev_ret.fillna(0)).cumprod() * 100
+    
+    df_w = df.set_index('Date').resample('W').agg({'lev_price': 'last'}).dropna().reset_index()
+    df_w['sma20'] = df_w['lev_price'].rolling(window=20).mean()
+    
+    delta = df_w['lev_price'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    df_w['rsi'] = 100 - (100 / (1 + (gain / loss)))
+    df_w['is_down'] = df_w['lev_price'].diff() < 0
+    
+    last_row = df_w.iloc[-2]
+    close = float(last_row['lev_price'])
+    sma20 = float(last_row['sma20'])
+    rsi = float(last_row['rsi'])
+    is_down = bool(last_row['is_down'])
+    date_str = str(last_row['Date'])[:10]
+    
+    is_signal = (close < sma20) and (rsi < 35) and is_down
+    stop_loss = close * 0.95
+    take_profit = close * 1.09
+    
+    return {
+        "date_str": date_str,
+        "close_3x": close,
+        "sma20": sma20,
+        "rsi": rsi,
+        "is_down": is_down,
+        "is_signal": is_signal,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "isin": isin_code
+    }
+
+eu_configs = [
+    {"Name": "CAC 40 3X", "Ticker": "^FCHI", "Fee": 0.0075, "ISIN": "IE00B7V0GB87"},
+    {"Name": "DAX 40 3X", "Ticker": "^GDAXI", "Fee": 0.015, "ISIN": "N/D"}
 ]
 
-results_eu = []
-for item in eu_assets:
+eu_table_rows = []
+
+for cfg in eu_configs:
     try:
-        ticker_obj = yf.Ticker(item["Ticker"])
-        df_raw = ticker_obj.history(period="5d", interval="15m")
+        res = check_eu_swing_strategy(cfg["Ticker"], cfg["Fee"], cfg["ISIN"])
         
-        if df_raw.empty:
-            results_eu.append({"Asset": item["Asset"], "Ticker": item["Ticker"], "Stato Segnale": "⚠️ No Dati", "Dettagli": "Nessun dato scaricato"})
-            continue
-            
-        df_raw = df_raw.reset_index()
-        time_col = 'Datetime' if 'Datetime' in df_raw.columns else 'Date'
-        df_raw.rename(columns={time_col: 'timestamp', 'Open':'open', 'High':'high', 'Low':'low', 'Close':'close', 'Volume':'volume'}, inplace=True)
+        status_txt = "🟢 SEGNALE LONG 3X" if res["is_signal"] else "⚖️ In Range (Nessun Segnale)"
+        det_txt = (
+            f"SL -5%: `{res['stop_loss']:.2f}` | TP +9%: `{res['take_profit']:.2f}` | ISIN: `{res['isin']}`"
+            if res["is_signal"] else
+            f"SMA20: {res['sma20']:.2f} | RSI: {res['rsi']:.2f} | Chiusura Negativa: {'Sì' if res['is_down'] else 'No'}"
+        )
         
-        df_15m = process_indicators(df_raw, item["TZ"])
-        today_date = df_15m.index.date.max()
-        today_b = df_15m[df_15m.index.date == today_date]
-        
-        orb_b = today_b[(today_b.index.hour == item["Hour"]) & (today_b.index.minute == item["Min"])]
-        if orb_b.empty:
-            results_eu.append({"Asset": item["Asset"], "Ticker": item["Ticker"], "Stato Segnale": "🕒 In Attesa ORB", "Dettagli": "Candela 09:00 in formazione"})
-            continue
-            
-        orb_h, orb_l = float(orb_b['high'].iloc[0]), float(orb_b['low'].iloc[0])
-        orb_r, atr_v = orb_h - orb_l, float(orb_b['ATR'].iloc[0])
-        
-        last_b = today_b.iloc[-1]
-        c_price, c_ema = float(last_b['close']), float(last_b['EMA_200'])
-        c_sma = float(last_b['SMA_50']) if not pd.isna(last_b['SMA_50']) else c_price
-        c_rsi = float(last_b['RSI']) if not pd.isna(last_b['RSI']) else 50.0
-        
-        is_long = (c_price > orb_h) and (c_price > c_ema) and (c_price > c_sma) and (45 <= c_rsi <= 75)
-        is_short = (c_price < orb_l) and (c_price < c_ema) and (c_price < c_sma) and (25 <= c_rsi <= 55)
-        
-        if orb_r < (0.25 * atr_v):
-            st_text, reason = "⚠️ ATR Scarto", f"Range stretto ({orb_r:.1f})"
-        elif is_long:
-            tp = c_price + (1.3 * (c_price - orb_l))
-            st_text, reason = "🟢 LONG", f"Breakout sopra {orb_h:.1f} | TP 1.3x: {tp:.1f}"
-        elif is_short:
-            tp = c_price - (1.3 * (orb_h - c_price))
-            st_text, reason = "🔴 SHORT", f"Breakdown sotto {orb_l:.1f} | TP 1.3x: {tp:.1f}"
-        else:
-            st_text, reason = "⚖️ In Range", f"Prezzo: {c_price:.1f} | RSI: {c_rsi:.1f}"
-
-        results_eu.append({"Asset": item["Asset"], "Ticker": item["Ticker"], "Stato Segnale": st_text, "Dettagli": reason})
+        eu_table_rows.append({
+            "Asset": cfg["Name"],
+            "Ticker": cfg["Ticker"],
+            "Data Chiusura Settimana": res["date_str"],
+            "Prezzo Simula 3x": f"{res['close_3x']:.2f}",
+            "SMA20 Settimanale": f"{res['sma20']:.2f}",
+            "RSI(14) Settimanale": f"{res['rsi']:.2f}",
+            "Chiusura Neg.": "Sì" if res["is_down"] else "No",
+            "Stato Segnale": status_txt,
+            "Parametri Operativi": det_txt
+        })
     except Exception as ex:
-        results_eu.append({"Asset": item["Asset"], "Ticker": item["Ticker"], "Stato Segnale": "⚠️ Errore", "Dettagli": str(ex)})
+        eu_table_rows.append({
+            "Asset": cfg["Name"],
+            "Ticker": cfg["Ticker"],
+            "Data Chiusura Settimana": "-",
+            "Prezzo Simula 3x": "-",
+            "SMA20 Settimanale": "-",
+            "RSI(14) Settimanale": "-",
+            "Chiusura Neg.": "-",
+            "Stato Segnale": "⚠️ Errore Calcolo",
+            "Parametri Operativi": str(ex)
+        })
 
-st.dataframe(pd.DataFrame(results_eu), use_container_width=True)
+st.dataframe(pd.DataFrame(eu_table_rows), use_container_width=True)
