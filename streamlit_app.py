@@ -119,7 +119,7 @@ for ticker, name in usa_tickers.items():
 
         sig_type = "NONE"
         status_str = "⚖️ In Range"
-        detail_str = f"RSI: {rsi_val:.1f} | EMA200: {ema_200:.2f}"
+        detail_str = f"RSI: {rsi_val:.1f} | EMA200: ${ema_200:.2f}"
         sl_p, tp_p = 0.0, 0.0
         risk_pct, tp_pct = 0.0, 0.0
 
@@ -141,10 +141,10 @@ for ticker, name in usa_tickers.items():
 
             if blocked:
                 status_str = "❌ BLOCCATO"
-                detail_str = f"Ostacolo statico R1/S1 tra prezzo e TP"
+                detail_str = "Ostacolo statico R1/S1 tra prezzo e TP"
                 sig_type = "BLOCKED"
             else:
-                status_str = f"🟢 LONG" if is_long else "🔴 SHORT"
+                status_str = "🟢 LONG" if is_long else "🔴 SHORT"
                 detail_str = f"Entry: ${c_price:.2f} | TP (1.3x): ${tp_p:.2f} | SL: ${sl_p:.2f}"
 
         usa_table_rows.append({
@@ -169,7 +169,6 @@ for ticker, name in usa_tickers.items():
     except Exception as ex:
         usa_table_rows.append({"Asset": name, "Ticker": ticker, "Prezzo ($)": "-", "Stato Segnale": "⚠️ Errore", "Dettagli": str(ex)})
 
-# Mostra la tabella panoramica USA
 st.dataframe(pd.DataFrame(usa_table_rows), use_container_width=True)
 
 # =============================================================================
@@ -192,7 +191,6 @@ if selected_ticker in usa_data_dict:
     with col_alp1:
         st.info(f"**Asset Selezionato:** {asset_info['name']}\n\n**Stato Segnale Alpaca:** {asset_info['status_str']}")
     
-    # Esecuzione Alpaca
     with col_alp2:
         if asset_info['signal'] in ["LONG", "SHORT"]:
             pos = [p for p in trading_client.get_all_positions() if p.symbol == selected_ticker]
@@ -220,7 +218,6 @@ if selected_ticker in usa_data_dict:
         else:
             st.caption("Nessun ordine simulato Alpaca disponibile al momento.")
 
-    # Convertitore Fineco
     st.markdown(f"#### 🧮 Convertitore Fineco per {selected_ticker}")
     
     default_fineco_prices = {"SPY": 5800.0, "USO": 70.50, "GLD": 2500.0}
@@ -235,7 +232,6 @@ if selected_ticker in usa_data_dict:
         )
     
     with col_f2:
-        # Direzione rilevata automaticamente dal segnale
         if asset_info['signal'] == "LONG":
             st.success("Direzione rilevata in automatico: **⬆️ LONG**")
             current_dir = "LONG"
@@ -244,9 +240,8 @@ if selected_ticker in usa_data_dict:
             current_dir = "SHORT"
         else:
             st.warning("⚠️ Nessun segnale attivo su Alpaca. Selezione manuale per calcolo:")
-            current_dir = st.radio("Direzione da simualre su Fineco:", ["LONG", "SHORT"], horizontal=True)
+            current_dir = st.radio("Direzione da simulare su Fineco:", ["LONG", "SHORT"], horizontal=True)
 
-    # Calcolo livelli Fineco
     calc_risk_pct = asset_info['risk_pct'] if asset_info['risk_pct'] > 0 else 0.50
     calc_tp_pct = calc_risk_pct * 1.3
 
@@ -266,7 +261,7 @@ if selected_ticker in usa_data_dict:
     res_c3.metric("🔴 BARRIERA KO / STOP FINECO", f"{fineco_sl:.2f}", delta=f"{'-' if current_dir=='LONG' else '+'}{dist_sl_pts:.2f} pts ({calc_risk_pct:.2f}%)", delta_color="inverse")
 
 # =============================================================================
-# 🇪🇺 SEZIONE 2: MERCATI UE
+# 🇪🇺 SEZIONE 2: MERCATI UE (RISOLTO PROBLEMA MULTIINDEX YFINANCE)
 # =============================================================================
 st.divider()
 st.header("🇪🇺 Mercati Europei — Monitoraggio & Diagnostica")
@@ -280,16 +275,16 @@ eu_assets = [
 results_eu = []
 for item in eu_assets:
     try:
-        df_raw = yf.download(item["Ticker"], period="5d", interval="15m", progress=False)
+        ticker_obj = yf.Ticker(item["Ticker"])
+        df_raw = ticker_obj.history(period="5d", interval="15m")
+        
         if df_raw.empty:
             results_eu.append({"Asset": item["Asset"], "Ticker": item["Ticker"], "Stato Segnale": "⚠️ No Dati", "Dettagli": "Nessun dato scaricato"})
             continue
             
-        if isinstance(df_raw.columns, pd.MultiIndex):
-            df_raw.columns = df_raw.columns.get_level_values(0)
-        df_raw.index = df_raw.index.tz_convert(item["TZ"])
-        df_raw.rename(columns={'Open':'open', 'High':'high', 'Low':'low', 'Close':'close', 'Volume':'volume'}, inplace=True)
-        df_raw['timestamp'] = df_raw.index
+        df_raw = df_raw.reset_index()
+        time_col = 'Datetime' if 'Datetime' in df_raw.columns else 'Date'
+        df_raw.rename(columns={time_col: 'timestamp', 'Open':'open', 'High':'high', 'Low':'low', 'Close':'close', 'Volume':'volume'}, inplace=True)
         
         df_15m = process_indicators(df_raw, item["TZ"])
         today_date = df_15m.index.date.max()
