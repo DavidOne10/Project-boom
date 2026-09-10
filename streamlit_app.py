@@ -13,6 +13,10 @@ st.title("📈 Trading Dashboard — USA Real-Time & UE Swing 3X")
 # =============================================================================
 # CREDENZIALI ALPACA (ESCLUSIVA MERCATI USA)
 # =============================================================================
+
+API_KEY = st.secrets.get("API_KEY", "PKSRPGHTEKXA6KIP4HV6AOEZ5Z")
+SECRET_KEY = st.secrets.get("SECRET_KEY", "7ZdgT6TyiEW5wkxSJqqpPHJL5qnxmJTMpoTk8PQ6cihw")
+
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY") or st.secrets.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY") or st.secrets.get("ALPACA_SECRET_KEY", "")
 ALPACA_BASE_URL = "https://data.alpaca.markets/v2"
