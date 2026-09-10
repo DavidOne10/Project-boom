@@ -3,41 +3,55 @@ import requests
 import streamlit as st
 import pandas as pd
 import numpy as np
-import pytz
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime
 
 st.set_page_config(page_title="Dashboard Trading — USA & UE", page_icon="📈", layout="wide")
 
 st.title("📈 Trading Dashboard — USA Real-Time & UE Swing 3X")
 
 # =============================================================================
-# CREDENZIALI (Compatibilità Sistema + Secrets)
+# CREDENZIALI ALPACA (ESCLUSIVA MERCATI USA)
 # =============================================================================
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY") or st.secrets.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY") or st.secrets.get("ALPACA_SECRET_KEY", "")
 ALPACA_BASE_URL = "https://data.alpaca.markets/v2"
 
 # =============================================================================
-# 🇺🇸 SEZIONE 1: MERCATI USA (ORB 15M + S/R + PREVISIONE)
+# 🇺🇸 SEZIONE 1: MERCATI USA (ALPACAS ESCLUSIVO - ORB 15M + S/R)
 # =============================================================================
-st.header("🇺🇸 Mercati USA — Breakout ORB 15m & Monitoraggio")
+st.header("🇺🇸 Mercati USA — Breakout ORB 15m (Alpaca Data)")
 
 def get_alpaca_bars(symbol):
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         return pd.DataFrame()
-    headers = {"APCA-API-KEY-ID": ALPACA_API_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY}
+    
+    headers = {
+        "APCA-API-KEY-ID": ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY
+    }
     url = f"{ALPACA_BASE_URL}/stocks/bars?symbols={symbol}&timeframe=15Min&limit=500&feed=iex"
+    
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200: return pd.DataFrame()
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            return pd.DataFrame()
+            
         data = response.json().get("bars", {}).get(symbol, [])
-        if not data: return pd.DataFrame()
+        if not data:
+            return pd.DataFrame()
+            
         df = pd.DataFrame(data)
         df['t'] = pd.to_datetime(df['t'])
         df.set_index('t', inplace=True)
         df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close'}, inplace=True)
-        return df
+        
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC").tz_convert("America/New_York")
+        else:
+            df.index = df.index.tz_convert("America/New_York")
+            
+        return df[['Open', 'High', 'Low', 'Close']]
     except Exception:
         return pd.DataFrame()
 
@@ -48,13 +62,15 @@ usa_table_rows = []
 for name, symbol in usa_assets.items():
     df = get_alpaca_bars(symbol)
     if df.empty:
-        usa_table_rows.append({"Asset": name, "Ticker": symbol, "Prezzo": "-", "Stato Segnale": "⚠️ No Dati", "Previsione / Monitoraggio": "Verificare chiavi Alpaca"})
+        usa_table_rows.append({
+            "Asset": name, "Ticker": symbol, "Prezzo": "-", 
+            "Stato Segnale": "⚠️ No Dati / Credenziali", 
+            "Previsione / Monitoraggio": "Controlla le chiavi API Alpaca nei Secrets"
+        })
+        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65}
         continue
 
-    df.index = df.index.tz_convert("America/New_York")
     df['date'] = df.index.date
-
-    # Pivot R1/S1 giorno precedente
     daily = df.groupby('date').agg({'High': 'max', 'Low': 'min', 'Close': 'last'})
     daily['pivot'] = (daily['High'] + daily['Low'] + daily['Close']) / 3
     daily['R1'] = (2 * daily['pivot']) - daily['Low']
@@ -79,28 +95,33 @@ for name, symbol in usa_assets.items():
 
     if today_bars.empty:
         usa_table_rows.append({"Asset": name, "Ticker": symbol, "Prezzo": "-", "Stato Segnale": "🕒 In Attesa", "Previsione / Monitoraggio": "Nessuna candela odierna"})
+        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65}
         continue
 
     orb_c = today_bars[(today_bars.index.hour == 9) & (today_bars.index.minute == 30)]
+    curr_p = float(today_bars.iloc[-1]['Close'])
+
     if orb_c.empty:
-        usa_table_rows.append({"Asset": name, "Ticker": symbol, "Prezzo": f"${today_bars.iloc[-1]['Close']:.2f}", "Stato Segnale": "🕒 Attesa ORB", "Candela 09:30 EST non chiusa": ""})
+        usa_table_rows.append({"Asset": name, "Ticker": symbol, "Prezzo": f"${curr_p:.2f}", "Stato Segnale": "🕒 Attesa ORB", "Previsione / Monitoraggio": "Candela 09:30 EST in attesa di chiusura"})
+        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65}
         continue
 
     orb_h, orb_l = float(orb_c['High'].values[0]), float(orb_c['Low'].values[0])
     orb_r, atr = orb_h - orb_l, float(orb_c['ATR'].values[0])
-    curr_p = float(today_bars.iloc[-1]['Close'])
 
     if pd.isna(atr) or orb_r < (0.25 * atr):
-        usa_table_rows.append({"Asset": name, "Ticker": symbol, "Prezzo": f"${curr_p:.2f}", "Stato Segnale": "⚠️ ATR Scarto", "Previsione / Monitoraggio": f"Range (${orb_r:.2f}) inferiore al 25% dell'ATR (${0.25*atr:.2f})"})
+        usa_table_rows.append({"Asset": name, "Ticker": symbol, "Prezzo": f"${curr_p:.2f}", "Stato Segnale": "⚠️ ATR Scarto", "Previsione / Monitoraggio": f"Range (${orb_r:.2f}) < 25% ATR (${0.25*atr:.2f})"})
+        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65}
         continue
 
     session_bars = today_bars[(today_bars.index.hour > 9) | ((today_bars.index.hour == 9) & (today_bars.index.minute >= 45))]
     if session_bars.empty:
-        usa_table_rows.append({"Asset": name, "Ticker": symbol, "Prezzo": f"${curr_p:.2f}", "Stato Segnale": "🕒 Attesa 09:45", "Previsione / Monitoraggio": "Mercato aperto, in attesa della finestra operativa"})
+        usa_table_rows.append({"Asset": name, "Ticker": symbol, "Prezzo": f"${curr_p:.2f}", "Stato Segnale": "🕒 Attesa 09:45", "Previsione / Monitoraggio": "In attesa della finestra operativa"})
+        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65}
         continue
 
     signal_type = "NONE"
-    entry_p, sl_p, tp_p, risk_pct, tp_pct = 0.0, 0.0, 0.0, 0.0, 0.0
+    entry_p, sl_p, tp_p, risk_pct, tp_pct = 0.0, 0.0, 0.0, 0.50, 0.65
     status_str = "⚖️ In Range"
     monitor_str = f"Prezzo a ${curr_p:.2f} | ORB High: ${orb_h:.2f} / Low: ${orb_l:.2f}"
 
@@ -133,13 +154,12 @@ for name, symbol in usa_assets.items():
                 risk_pct = (risk / c) * 100
                 tp_pct = risk_pct * 1.3
                 status_str = f"🟢 {signal_type} ATTIVO" if i == len(session_bars)-1 else f"🔵 {signal_type} PASSATO"
-                monitor_str = f"Segnale scattato a ${entry_p:.2f} (Target: ${tp_p:.2f})"
+                monitor_str = f"Segnale scattato a ${entry_p:.2f}"
                 break
             else:
                 status_str = "❌ BLOCCATO"
-                monitor_str = f"Ostacolato da R1/S1"
+                monitor_str = f"Breakout bloccato da R1/S1"
 
-    # Se non c'è segnale, calcoliamo una previsione vicina
     if signal_type == "NONE":
         dist_long = orb_h - curr_p
         dist_short = curr_p - orb_l
@@ -148,17 +168,12 @@ for name, symbol in usa_assets.items():
         elif curr_p < orb_l:
             monitor_str = f"Sotto ORB Low (${orb_l:.2f}), in attesa filtri EMA/RSI"
         else:
-            monitor_str = f"Manca ${dist_long:.2f} al breakout Long | Manca ${dist_short:.2f} al breakout Short"
+            monitor_str = f"Manca ${dist_long:.2f} a Long | Manca ${dist_short:.2f} a Short"
 
     usa_results[symbol] = {
-        "name": name,
         "signal": signal_type,
-        "entry": entry_p if entry_p > 0 else curr_p,
-        "sl": sl_p,
-        "tp": tp_p,
         "risk_pct": risk_pct if risk_pct > 0 else 0.50,
-        "tp_pct": tp_pct if tp_pct > 0 else 0.65,
-        "status": status_str
+        "tp_pct": tp_pct if tp_pct > 0 else 0.65
     }
 
     usa_table_rows.append({
@@ -171,7 +186,9 @@ for name, symbol in usa_assets.items():
 
 st.dataframe(pd.DataFrame(usa_table_rows), use_container_width=True)
 
-# --- CONVERTITORE FINECO AUTOMATICO (USA) ---
+# =============================================================================
+# 🎯 CONVERTITORE FINECO AUTOMATICO (USA)
+# =============================================================================
 st.divider()
 st.subheader("🧮 Convertitore Prezzi Fineco (USA)")
 
@@ -185,10 +202,9 @@ with col_f1:
 with col_f2:
     detected_dir = res_u['signal'] if res_u['signal'] in ["LONG", "SHORT"] else "LONG"
     if res_u['signal'] in ["LONG", "SHORT"]:
-        st.success(f"Direzione rilevata automaticamente dal segnale: **{detected_dir}**")
+        st.success(f"Direzione impostata automaticamente dal segnale attivo: **{detected_dir}**")
     else:
-        st.warning("Nessun segnale attivo. Direzione predefinita per simulazione:")
-        detected_dir = st.radio("Seleziona verso:", ["LONG", "SHORT"], horizontal=True)
+        st.info(f"Nessun segnale attivo. Direzione predefinita: **{detected_dir}**")
 
 r_pct = res_u['risk_pct']
 t_pct = res_u['tp_pct']
@@ -205,9 +221,8 @@ m1.metric("Prezzo Fineco", f"{fineco_val:.2f}")
 m2.metric("🎯 TARGET PROFIT", f"{f_tp:.2f}", delta=f"{t_pct:.2f}%")
 m3.metric("🔴 STOP LOSS", f"{f_sl:.2f}", delta=f"-{r_pct:.2f}%", delta_color="inverse")
 
-
 # =============================================================================
-# 🇪🇺 SEZIONE 2: MERCATI EUROPEI (SWING 3X + PREVISIONE)
+# 🇪🇺 SEZIONE 2: MERCATI EUROPEI (YFINANCE - SWING SETTIMANALE 3X)
 # =============================================================================
 st.divider()
 st.header("🇪🇺 Mercati Europei — Strategy Swing Settimanale ETF 3X & Monitoraggio")
@@ -240,16 +255,12 @@ def check_eu_swing(ticker, fee_rate, isin):
     
     is_signal = (close < sma20) and (rsi < 35) and is_down
     
-    # Previsione / Monitoraggio
-    conds_met = sum([close < sma20, rsi < 35, is_down])
-    if is_signal:
-        forecast = "Segnale Long attivo sulla chiusura settimanale."
-    else:
-        missing = []
-        if not (close < sma20): missing.append(f"Prezzo ({close:.1f}) sopra SMA20 ({sma20:.1f})")
-        if not (rsi < 35): missing.append(f"RSI ({rsi:.1f}) sopra 35")
-        if not is_down: missing.append("Candela non ribassista")
-        forecast = f"Mancano requisiti: {', '.join(missing)}"
+    missing = []
+    if not (close < sma20): missing.append(f"Prezzo ({close:.1f}) sopra SMA20 ({sma20:.1f})")
+    if not (rsi < 35): missing.append(f"RSI ({rsi:.1f}) sopra 35")
+    if not is_down: missing.append("Candela non ribassista")
+    
+    forecast = "Segnale Long attivo sulla chiusura settimanale." if is_signal else f"Mancano requisiti: {', '.join(missing)}"
 
     return {
         "date_str": date_str, "close": close, "sma20": sma20, "rsi": rsi, 
@@ -266,7 +277,6 @@ for cfg in eu_configs:
     try:
         res = check_eu_swing(cfg["Ticker"], cfg["Fee"], cfg["ISIN"])
         status = "🟢 SEGNALE LONG 3X" if res["is_signal"] else "⚖️ In Attesa / Monitoraggio"
-        
         eu_table_rows.append({
             "Asset": cfg["Name"],
             "Ticker": cfg["Ticker"],
