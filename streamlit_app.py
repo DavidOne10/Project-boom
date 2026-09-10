@@ -11,30 +11,27 @@ st.set_page_config(page_title="Dashboard Trading — USA & UE", page_icon="📈"
 st.title("📈 Trading Dashboard — USA Real-Time & UE Swing 3X")
 
 # =============================================================================
-# CREDENZIALI ALPACA (ESCLUSIVA MERCATI USA)
+# CREDENZIALI ALPACA
 # =============================================================================
-
-API_KEY = st.secrets.get("API_KEY", "PKSRPGHTEKXA6KIP4HV6AOEZ5Z")
-SECRET_KEY = st.secrets.get("SECRET_KEY", "7ZdgT6TyiEW5wkxSJqqpPHJL5qnxmJTMpoTk8PQ6cihw")
-
-ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY") or st.secrets.get("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY") or st.secrets.get("ALPACA_SECRET_KEY", "")
-ALPACA_BASE_URL = "https://data.alpaca.markets/v2"
+API_KEY = os.environ.get("API_KEY") or st.secrets.get("API_KEY", "PKSRPGHTEKXA6KIP4HV6AOEZ5Z")
+SECRET_KEY = os.environ.get("SECRET_KEY") or st.secrets.get("SECRET_KEY", "7ZdgT6TyiEW5wkxSJqqpPHJL5qnxmJTMpoTk8PQ6cihw")
+ALPACA_DATA_URL = "https://data.alpaca.markets/v2"
+ALPACA_TRADING_URL = "https://paper-api.alpaca.markets/v2"  # Cambiare in api.alpaca.markets se live
 
 # =============================================================================
-# 🇺🇸 SEZIONE 1: MERCATI USA (ALPACAS ESCLUSIVO - ORB 15M + S/R)
+# 🇺🇸 SEZIONE 1: MERCATI USA (ALPACA ESCLUSIVO - ORB 15M + S/R)
 # =============================================================================
 st.header("🇺🇸 Mercati USA — Breakout ORB 15m (Alpaca Data)")
 
 def get_alpaca_bars(symbol):
-    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+    if not API_KEY or not SECRET_KEY:
         return pd.DataFrame()
     
     headers = {
-        "APCA-API-KEY-ID": ALPACA_API_KEY,
-        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY
+        "APCA-API-KEY-ID": API_KEY,
+        "APCA-API-SECRET-KEY": SECRET_KEY
     }
-    url = f"{ALPACA_BASE_URL}/stocks/bars?symbols={symbol}&timeframe=15Min&limit=500&feed=iex"
+    url = f"{ALPACA_DATA_URL}/stocks/bars?symbols={symbol}&timeframe=15Min&limit=500&feed=iex"
     
     try:
         response = requests.get(url, headers=headers, timeout=10)
@@ -69,9 +66,9 @@ for name, symbol in usa_assets.items():
         usa_table_rows.append({
             "Asset": name, "Ticker": symbol, "Prezzo": "-", 
             "Stato Segnale": "⚠️ No Dati / Credenziali", 
-            "Previsione / Monitoraggio": "Controlla le chiavi API Alpaca nei Secrets"
+            "Previsione / Monitoraggio": "Verifica API_KEY / SECRET_KEY nei Secrets"
         })
-        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65}
+        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65, "entry": 0.0, "sl": 0.0, "tp": 0.0}
         continue
 
     df['date'] = df.index.date
@@ -99,7 +96,7 @@ for name, symbol in usa_assets.items():
 
     if today_bars.empty:
         usa_table_rows.append({"Asset": name, "Ticker": symbol, "Prezzo": "-", "Stato Segnale": "🕒 In Attesa", "Previsione / Monitoraggio": "Nessuna candela odierna"})
-        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65}
+        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65, "entry": 0.0, "sl": 0.0, "tp": 0.0}
         continue
 
     orb_c = today_bars[(today_bars.index.hour == 9) & (today_bars.index.minute == 30)]
@@ -107,7 +104,7 @@ for name, symbol in usa_assets.items():
 
     if orb_c.empty:
         usa_table_rows.append({"Asset": name, "Ticker": symbol, "Prezzo": f"${curr_p:.2f}", "Stato Segnale": "🕒 Attesa ORB", "Previsione / Monitoraggio": "Candela 09:30 EST in attesa di chiusura"})
-        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65}
+        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65, "entry": curr_p, "sl": 0.0, "tp": 0.0}
         continue
 
     orb_h, orb_l = float(orb_c['High'].values[0]), float(orb_c['Low'].values[0])
@@ -115,17 +112,17 @@ for name, symbol in usa_assets.items():
 
     if pd.isna(atr) or orb_r < (0.25 * atr):
         usa_table_rows.append({"Asset": name, "Ticker": symbol, "Prezzo": f"${curr_p:.2f}", "Stato Segnale": "⚠️ ATR Scarto", "Previsione / Monitoraggio": f"Range (${orb_r:.2f}) < 25% ATR (${0.25*atr:.2f})"})
-        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65}
+        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65, "entry": curr_p, "sl": 0.0, "tp": 0.0}
         continue
 
     session_bars = today_bars[(today_bars.index.hour > 9) | ((today_bars.index.hour == 9) & (today_bars.index.minute >= 45))]
     if session_bars.empty:
         usa_table_rows.append({"Asset": name, "Ticker": symbol, "Prezzo": f"${curr_p:.2f}", "Stato Segnale": "🕒 Attesa 09:45", "Previsione / Monitoraggio": "In attesa della finestra operativa"})
-        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65}
+        usa_results[symbol] = {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65, "entry": curr_p, "sl": 0.0, "tp": 0.0}
         continue
 
     signal_type = "NONE"
-    entry_p, sl_p, tp_p, risk_pct, tp_pct = 0.0, 0.0, 0.0, 0.50, 0.65
+    entry_p, sl_p, tp_p, risk_pct, tp_pct = curr_p, 0.0, 0.0, 0.50, 0.65
     status_str = "⚖️ In Range"
     monitor_str = f"Prezzo a ${curr_p:.2f} | ORB High: ${orb_h:.2f} / Low: ${orb_l:.2f}"
 
@@ -176,6 +173,9 @@ for name, symbol in usa_assets.items():
 
     usa_results[symbol] = {
         "signal": signal_type,
+        "entry": entry_p,
+        "sl": sl_p,
+        "tp": tp_p,
         "risk_pct": risk_pct if risk_pct > 0 else 0.50,
         "tp_pct": tp_pct if tp_pct > 0 else 0.65
     }
@@ -191,24 +191,26 @@ for name, symbol in usa_assets.items():
 st.dataframe(pd.DataFrame(usa_table_rows), use_container_width=True)
 
 # =============================================================================
-# 🎯 CONVERTITORE FINECO AUTOMATICO (USA)
+# 🎯 GESTIONE ORDINI ALPACA & CONVERTITORE FINECO (USA)
 # =============================================================================
 st.divider()
-st.subheader("🧮 Convertitore Prezzi Fineco (USA)")
+st.subheader("🚀 Gestione Ordini Alpaca & Convertitore Fineco (USA)")
 
-sel_usa = st.radio("Seleziona Asset:", options=list(usa_assets.values()), format_func=lambda x: f"{[k for k,v in usa_assets.items() if v==x][0]} ({x})", horizontal=True)
-res_u = usa_results.get(sel_usa, {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65})
+sel_usa = st.radio("Seleziona Asset da gestire:", options=list(usa_assets.values()), format_func=lambda x: f"{[k for k,v in usa_assets.items() if v==x][0]} ({x})", horizontal=True)
+res_u = usa_results.get(sel_usa, {"signal": "NONE", "risk_pct": 0.50, "tp_pct": 0.65, "entry": 100.0, "sl": 0.0, "tp": 0.0})
 
-col_f1, col_f2 = st.columns(2)
+col_f1, col_f2, col_f3 = st.columns(3)
 with col_f1:
-    fineco_val = st.number_input(f"Inserisci Prezzo Reale Fineco ({sel_usa}):", value=5000.0 if sel_usa=="SPY" else 100.0, step=0.1, format="%.2f")
-
+    fineco_val = st.number_input(f"Prezzo Reale Fineco ({sel_usa}):", value=float(res_u['entry']) if res_u['entry'] > 0 else 100.0, step=0.1, format="%.2f")
 with col_f2:
+    qty_val = st.number_input("Quantità (Shares/Contracts):", value=1, min_value=1, step=1)
+with col_f3:
     detected_dir = res_u['signal'] if res_u['signal'] in ["LONG", "SHORT"] else "LONG"
     if res_u['signal'] in ["LONG", "SHORT"]:
-        st.success(f"Direzione impostata automaticamente dal segnale attivo: **{detected_dir}**")
+        st.success(f"Direzione rilevata: **{detected_dir}**")
     else:
-        st.info(f"Nessun segnale attivo. Direzione predefinita: **{detected_dir}**")
+        st.info("Nessun segnale attivo. Scegli verso:")
+        detected_dir = st.radio("Verso:", ["LONG", "SHORT"], horizontal=True, key="manual_dir_radio")
 
 r_pct = res_u['risk_pct']
 t_pct = res_u['tp_pct']
@@ -224,6 +226,64 @@ m1, m2, m3 = st.columns(3)
 m1.metric("Prezzo Fineco", f"{fineco_val:.2f}")
 m2.metric("🎯 TARGET PROFIT", f"{f_tp:.2f}", delta=f"{t_pct:.2f}%")
 m3.metric("🔴 STOP LOSS", f"{f_sl:.2f}", delta=f"-{r_pct:.2f}%", delta_color="inverse")
+
+# Pulsanti Invio Ordine Alpaca
+st.write("### Esecuzione Ordine su Alpaca (Paper Trading)")
+col_btn1, col_btn2 = st.columns(2)
+
+def send_alpaca_order(symbol, qty, side, order_type="market", limit_price=None, stop_loss=None, take_profit=None):
+    if not API_KEY or not SECRET_KEY:
+        st.error("Chiavi API Alpaca mancanti!")
+        return
+    
+    headers = {
+        "APCA-API-KEY-ID": API_KEY,
+        "APCA-API-SECRET-KEY": SECRET_KEY,
+        "Content-Type": "application/json"
+    }
+    
+    order_data = {
+        "symbol": symbol,
+        "qty": str(qty),
+        "side": side.lower(),
+        "type": order_type,
+        "time_in_force": "gtc"
+    }
+    
+    # Se supportato da bracket order o invio separato, inviamo ordine base o con order_class bracket
+    if stop_loss and take_profit:
+        order_data["order_class"] = "bracket"
+        order_data["stop_loss"] = {"stop_price": f"{stop_loss:.2f}"}
+        order_data["take_profit"] = {"limit_price": f"{take_profit:.2f}"}
+
+    try:
+        response = requests.post(f"{ALPACA_TRADING_URL}/orders", json=order_data, headers=headers, timeout=10)
+        if response.status_code in [200, 201]:
+            res_json = response.json()
+            st.success(f"✅ Ordine inviato con successo ad Alpaca! ID: {res_json.get('id')}")
+        else:
+            st.error(f"❌ Errore Alpaca ({response.status_code}): {response.text}")
+    except Exception as e:
+        st.error(f"❌ Errore di connessione ad Alpaca: {e}")
+
+with col_btn1:
+    if st.button(f"🚀 Invia Ordine {detected_dir} a Mercato (Alpaca)", use_container_width=True):
+        side_str = "buy" if detected_dir == "LONG" else "sell"
+        send_alpaca_order(sel_usa, qty_val, side=side_str, order_type="market", stop_loss=f_sl, take_profit=f_tp)
+
+with col_btn2:
+    if st.button("📋 Test Connessione API Alpaca", use_container_width=True):
+        try:
+            h = {"APCA-API-KEY-ID": API_KEY, "APCA-API-SECRET-KEY": SECRET_KEY}
+            r = requests.get(f"{ALPACA_TRADING_URL}/account", headers=h, timeout=5)
+            if r.status_code == 200:
+                acc = r.json()
+                st.success(f"Connessione OK! Stato Conto: {acc.get('status')} | Cash: ${float(acc.get('cash', 0)):,.2f}")
+            else:
+                st.error(f"Errore connessione: {r.text}")
+        except Exception as ex:
+            st.error(f"Eccezione: {ex}")
+
 
 # =============================================================================
 # 🇪🇺 SEZIONE 2: MERCATI EUROPEI (YFINANCE - SWING SETTIMANALE 3X)
