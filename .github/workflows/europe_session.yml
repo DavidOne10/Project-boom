@@ -2,8 +2,8 @@ name: Europe Session (CAC 40_DAX)
 
 on:
   schedule:
-    # 07:15 - 15:30 UTC = 09:15 - 17:30 CEST (Italia)
-    - cron: '*/15 7-15 * * 1-5'
+    # Esecuzione EOD: lun-ven alle 15:45 UTC (17:45 CEST italiane)
+    - cron: '45 15 * * 1-5'
 
   workflow_dispatch:
 
@@ -20,9 +20,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests pandas pytz yfinance
-      - name: Run CAC40
+      - name: Run Strategies
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python cac40_checker.py
-             python dax_checker.py
+        run: |
+          python cac40_checker.py
+          python dax_checker.py
