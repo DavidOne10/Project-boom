@@ -1,8 +1,20 @@
+import os
 from datetime import datetime
 import pandas as pd
+import requests
 import yfinance as yf
 
-# 1. Download dati giornalieri
+
+def send_telegram(message):
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("CHAT_ID")
+    if token and chat_id:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
+        requests.post(url, json=payload)
+
+
+# 1. Download dati e patch candela odierna
 df = yf.download(
     "^GDAXI", period="3mo", interval="1d", progress=False, auto_adjust=True
 )
@@ -13,45 +25,23 @@ df = df.reset_index()
 today_str = datetime.now().strftime("%Y-%m-%d")
 last_date_str = df["Date"].dt.strftime("%Y-%m-%d").iloc[-1]
 
-# 2. Verifica ritardo candela odierna
 if last_date_str != today_str:
-    print(
-        f"[AVVISO] Candela del {today_str} non ancora presente in yfinance (Ultima: {last_date_str})."
-    )
-    print("Recupero l'ultimo prezzo utile dai dati intraday...")
-
-    # Fetch dati a 5m per estrarre la chiusura di oggi
     df_intra = yf.download(
         "^GDAXI", period="1d", interval="5m", progress=False, auto_adjust=True
     )
     if isinstance(df_intra.columns, pd.MultiIndex):
         df_intra.columns = df_intra.columns.get_level_values(0)
-
     if not df_intra.empty:
-        today_close = df_intra["Close"].iloc[-1]
-        today_open = df_intra["Open"].iloc[0]
-        today_high = df_intra["High"].max()
-        today_low = df_intra["Low"].min()
+        new_row = pd.DataFrame([{
+            "Date": pd.to_datetime(today_str),
+            "Open": df_intra["Open"].iloc[0],
+            "High": df_intra["High"].max(),
+            "Low": df_intra["Low"].min(),
+            "Close": df_intra["Close"].iloc[-1],
+        }])
+        df = pd.concat([df, new_row], ignore_ignore=True)
 
-        # Append manuale della candela odierna
-        new_row = pd.DataFrame(
-            [{
-                "Date": pd.to_datetime(today_str),
-                "Open": today_open,
-                "High": today_high,
-                "Low": today_low,
-                "Close": today_close,
-            }]
-        )
-
-        df = pd.concat([df, new_row], ignore_index=True)
-        print(
-            f"[OK] Candela odierna ricostruita con successo! Chiusura stimata: {today_close:.2f}"
-        )
-else:
-    print(f"[OK] Dati aggiornati all'ultima chiusura ({last_date_str}).")
-
-# 3. Calcolo Segnale per Domani
+# 2. Calcolo Indicatori
 df["ema50"] = df["Close"].ewm(span=50, adjust=False).mean()
 df["high_10"] = df["Close"].shift(1).rolling(10).max()
 
@@ -60,6 +50,16 @@ signal_today = (last_row["Close"] > last_row["ema50"]) and (
     last_row["Close"] > last_row["high_10"]
 )
 
-print(f"\nDAX Spot Close: {last_row['Close']:.2f}")
-print(f"EMA50: {last_row['ema50']:.2f} | Max 10g: {last_row['high_10']:.2f}")
-print(f"SEGNALE PER DOMANI IN APERTURA: {'INSERIRE ORDINE LONG' if signal_today else 'NESSUNA AZIONE'}")
+# 3. Notifica Telegram
+if signal_today:
+    msg = (
+        f"🚨 *SEGNALE STRATEGIA DAX 3X*\n\n"
+        f"Data: {today_str}\n"
+        f"Chiusura Spot: {last_row['Close']:.2f}\n"
+        f"EMA50: {last_row['ema50']:.2f} | Max 10g: {last_row['high_10']:.2f}\n\n"
+        f"🟢 *AZIONE DOMANI:* Comprare in APERTURA (09:00)\n"
+        f"🎯 *Take Profit:* +11.25%\n"
+        f"🛡️ *Stop Loss:* -3.75%\n"
+        f"⏱️ *Time Stop:* 6 Sessioni"
+    )
+    send_telegram(msg)
