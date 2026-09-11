@@ -1,4 +1,4 @@
-name: Europe Session (CAC 40)
+name: Europe Session (CAC 40_DAX)
 
 on:
   schedule:
@@ -25,3 +25,4 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python cac40_checker.py
+             python dax_checker.py
