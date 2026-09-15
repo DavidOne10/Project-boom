@@ -121,7 +121,7 @@ def check_us_stocks():
         try:
             request_params = StockBarsRequest(
                 symbol_or_symbols=sym,
-                timeframe=TimeFrame.Minute15,
+                timeframe=TimeFrame(15, TimeFrameUnit.Minute),
                 limit=200
             )
             bars = alpaca_client.get_stock_bars(request_params)
