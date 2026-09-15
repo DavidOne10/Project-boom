@@ -7,7 +7,7 @@ import yfinance as yf
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-# Imprtazione Alpaca SDK per Mercati US (Zero HTTP 429 Rate Limits)
+# Importazione Alpaca SDK per Mercati US (Zero HTTP 429 Rate Limits)
 try:
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
@@ -17,10 +17,6 @@ try:
     alpaca_client = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET) if ALPACA_KEY and ALPACA_SECRET else None
 except Exception:
     alpaca_client = None
-
-# Timezone
-now_ny = datetime.now(ZoneInfo("America/New_York"))
-now_rome = datetime.now(ZoneInfo("Europe/Rome"))
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID")
@@ -48,12 +44,12 @@ if len(sys.argv) > 1 and sys.argv[1] == "--test":
 # 1. SCANSIONE CRYPTO 24/7 (Protezione Anti-429 Yahoo)
 # ==========================================
 def check_crypto():
+    now_rome = datetime.now(ZoneInfo("Europe/Rome"))
     print(f"\n🪙 [{now_rome.strftime('%H:%M CEST')}] Avvio scansione Crypto 24/7...")
     crypto_symbols = {"BTC-USD": "Bitcoin ₿", "ETH-USD": "Ethereum 🔷"}
 
     for ticker, name in crypto_symbols.items():
         try:
-            # Download protetto
             df = yf.download(ticker, period="4mo", interval="1d", progress=False, auto_adjust=True)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
@@ -97,13 +93,13 @@ def check_crypto():
                 print(f"⚖️ {name}: Nessun breakout confermato.")
 
         except Exception as e:
-            # Cattura l'errore 429 di Yahoo senza far crashare il ciclo
-            print(f"⚠️ Errore temporaneo Yahoo per {name} (es. HTTP 429): {e}. Salto al prossimo asset.")
+            print(f"⚠️ Errore temporaneo Yahoo per {name}: {e}. Salto al prossimo asset.")
 
 # ==========================================
-# 2. SCANSIONE STOCK US (Solo Alpaca API - Zero Yahoo)
+# 2. SCANSIONE STOCK US (Alpaca API + Filtri Completi)
 # ==========================================
 def check_us_stocks():
+    now_ny = datetime.now(ZoneInfo("America/New_York"))
     print(f"\n🇺🇸 [{now_ny.strftime('%H:%M EST')}] Controllo orario Wall Street...")
     
     is_market_open = (now_ny.weekday() < 5) and (
@@ -126,19 +122,22 @@ def check_us_stocks():
             request_params = StockBarsRequest(
                 symbol_or_symbols=sym,
                 timeframe=TimeFrame.Minute15,
-                limit=100
+                limit=200
             )
             bars = alpaca_client.get_stock_bars(request_params)
             df = bars.df
 
             if isinstance(df.index, pd.MultiIndex):
-                df = df.xs(sym)
+                if sym in df.index.get_level_values(0):
+                    df = df.xs(sym)
+                else:
+                    continue
 
-            if df.empty or len(df) < 20:
+            if df.empty or len(df) < 50:
                 print(f"⚠️ Dati insufficienti per {sym} su Alpaca.")
                 continue
 
-            # ORB 15m (Prima candela delle 09:30 EST)
+            # Gestione Timezone EST
             df['date_est'] = df.index.tz_convert("America/New_York")
             today_df = df[df['date_est'].dt.date == now_ny.date()]
 
@@ -146,8 +145,8 @@ def check_us_stocks():
                 print(f"⏳ Nessuna candela per oggi su {sym}.")
                 continue
 
-            orb_first_bar = today_df[today_df['date_est'].dt.hour == 9]
-            orb_first_bar = orb_first_bar[orb_first_bar['date_est'].dt.minute == 30]
+            # ORB 15m (Candela 09:30 EST)
+            orb_first_bar = today_df[(today_df['date_est'].dt.hour == 9) & (today_df['date_est'].dt.minute == 30)]
 
             if orb_first_bar.empty:
                 print(f"⏳ Candela di apertura 09:30 non ancora disponibile per {sym}.")
@@ -156,21 +155,33 @@ def check_us_stocks():
             orb_high = float(orb_first_bar['high'].iloc[0])
             orb_low = float(orb_first_bar['low'].iloc[0])
 
-            # Indicatori
+            # Indicatori: EMA200, SMA50 e RSI(14)
             df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
+            df['SMA50'] = df['close'].rolling(50).mean()
             
+            delta = df['close'].diff()
+            gain = delta.where(delta > 0, 0).rolling(14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+            rs = gain / loss
+            df['RSI'] = 100 - (100 / (1 + rs))
+
             bar = df.iloc[-1]
             prev_bar = df.iloc[-2]
 
             c = float(bar['close'])
             prev_c = float(prev_bar['close'])
             ema200 = float(bar['EMA200'])
+            sma50 = float(bar['SMA50'])
+            rsi = float(bar['RSI'])
 
-            # Condizione Crossover
-            is_long = (c > orb_high) and (prev_c <= orb_high) and (c > ema200)
-            is_short = (c < orb_low) and (prev_c >= orb_low) and (c < ema200)
+            # Filtro RSI (25 - 75)
+            rsi_valid = 25 <= rsi <= 75
 
-            print(f"📊 {sym}: Prezzo {c:.2f} | ORB High: {orb_high:.2f} | ORB Low: {orb_low:.2f} | EMA200: {ema200:.2f}")
+            # Condizione Crossover Breakout + Filtri Trend
+            is_long = (c > orb_high) and (prev_c <= orb_high) and (c > ema200) and (c > sma50) and rsi_valid
+            is_short = (c < orb_low) and (prev_c >= orb_low) and (c < ema200) and (c < sma50) and rsi_valid
+
+            print(f"📊 {sym}: Prezzo {c:.2f} | ORB High: {orb_high:.2f} | ORB Low: {orb_low:.2f} | EMA200: {ema200:.2f} | RSI: {rsi:.1f}")
 
             if is_long or is_short:
                 azione = "LONG 📈" if is_long else "SHORT 📉"
@@ -180,7 +191,8 @@ def check_us_stocks():
                     f"🎯 *Azione:* {azione}\n"
                     f"📌 *Prezzo Attuale:* `${c:.2f}`\n"
                     f"📐 *Livello ORB:* `${orb_high if is_long else orb_low:.2f}`\n"
-                    f"📊 *EMA200:* `${ema200:.2f}`\n"
+                    f"📊 *EMA200:* `${ema200:.2f}` | *SMA50:* `${sma50:.2f}`\n"
+                    f"📈 *RSI(14):* `{rsi:.1f}`\n"
                 )
                 send_telegram(msg)
             else:
