@@ -39,29 +39,33 @@ if len(sys.argv) > 1 and sys.argv[1] == "--test":
     send_telegram("🧪 *TEST DAX 3X CHECKER — TELEGRAM OPERATIVO*")
     sys.exit(0)
 
-# --- 3. PARAMETRI DEFINITIVI BACKTEST (R/R 1:3) ---
-SL_PCT = 0.0500       # Stop Loss: -5.00%
-TP_PCT = 0.1500       # Take Profit: +15.00%
-MAX_DAYS = 6          # Time Stop: 6 Sessioni
-LOOKBACK_DAYS = 20    # Breakout a 20 Giorni di CHIUSURA
+# --- 3. PARAMETRI ESTRATTI DAL BACKTEST COLAB ---
+LEVERAGE = 3.0
+SL_PCT_3X = 0.0500     # Stop Loss -5.00% su Strumento 3X
+TP_PCT_3X = 0.1500     # Take Profit +15.00% su Strumento 3X
+MAX_DAYS = 6           # Time Stop a 6 sessioni
+LOOKBACK_DAYS = 20     # Breakout Canale 20g
+
+# Conversione percentuali sull'Indice Spot DAX
+SL_PCT_SPOT = SL_PCT_3X / LEVERAGE  # -1.67%
+TP_PCT_SPOT = TP_PCT_3X / LEVERAGE  # +5.00%
 
 print(f"🔍 Avvio controllo DAX 3X ({now_rome.strftime('%H:%M CEST')})...")
 
 try:
-    # Download Dati Giornalieri
     df = yf.download("^GDAXI", period="4mo", interval="1d", progress=False, auto_adjust=True)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
     if df.empty or len(df) < 25:
-        print("⚠️ Dati DAX non disponibili o bloccati da Yahoo.")
+        print("⚠️ Dati DAX non disponibili.")
         sys.exit(0)
 
     df.index = pd.to_datetime(df.index)
     today_str = now_rome.strftime("%Y-%m-%d")
     last_date_str = df.index[-1].strftime("%Y-%m-%d")
 
-    # Patch Intraday
+    # Patch Intraday se la candela daily odierna non è ancora salvata
     if last_date_str != today_str and now_rome.hour >= 9:
         time.sleep(1)
         try:
@@ -80,7 +84,7 @@ try:
         except Exception as patch_err:
             print(f"⚠️ Patch intraday non riuscita: {patch_err}. Uso l'ultima candela disponibile.")
 
-    # --- 4. CALCOLO INDICATORI TECNICI ---
+    # --- 4. INDICATORI TECNICI ---
     df['ema50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['high_20'] = df['Close'].shift(1).rolling(LOOKBACK_DAYS).max()
 
@@ -93,30 +97,32 @@ try:
     h20 = float(last_row['high_20'])
     prev_h20 = float(prev_row['high_20'])
 
-    # Crossover su base CHIUSURA
+    # Condizione Crossover
     is_breakout = (c > h20) and (prev_c <= prev_h20)
     signal_today = is_breakout and (c > ema50)
 
-    tp_price_spot = c * (1 + TP_PCT)
-    sl_price_spot = c * (1 - SL_PCT)
+    # Prezzi obiettivo sull'Indice Spot
+    tp_price_spot = c * (1 + TP_PCT_SPOT)
+    sl_price_spot = c * (1 - SL_PCT_SPOT)
 
     print(f"📊 DAX Spot: {c:.2f} | EMA50: {ema50:.2f} | Max 20g (Close): {h20:.2f}")
 
-    # --- 5. INVIO NOTIFICA TELEGRAM ---
+    # --- 5. NOTIFICA TELEGRAM ---
     if signal_today:
         msg = (
             f"🚨 *SEGNALE STRATEGIA DAX 3X (EOD)*\n\n"
             f"📅 *Data Segnale:* `{today_str}`\n"
-            f"📈 *Prezzo Chiusura Spot:* `{c:,.2f}`\n"
+            f"📈 *Chiusura Spot DAX:* `{c:,.2f}`\n"
             f"📊 *Filtro EMA50:* `{ema50:,.2f}` | *Max 20g:* `{h20:,.2f}`\n\n"
-            f"🟢 *AZIONE DOMANI:* Comprare in APERTURA (09:00)\n"
-            f"🎯 *Take Profit (+15%):* `{tp_price_spot:,.2f}`\n"
-            f"🛡️ *Stop Loss (-5%):* `{sl_price_spot:,.2f}`\n"
-            f"⏱️ *Time Stop Max:* `{MAX_DAYS} Sessioni`\n\n"
-            f"💡 _Nota: I livelli TP/SL sopra indicati sono speculari sul Certificate/ETF 3X._"
+            f"🟢 *AZIONE DOMANI:* Comprare in APERTURA (09:00)\n\n"
+            f"🎯 *TARGET SPOT DAX (+5.00%):* `{tp_price_spot:,.2f}`\n"
+            f"   └─ _(Corrisponde a +15.0% sul Certificate 3X)_\n"
+            f"🛡️ *STOP LOSS SPOT DAX (-1.67%):* `{sl_price_spot:,.2f}`\n"
+            f"   └─ _(Corrisponde a -5.0% sul Certificate 3X)_\n"
+            f"⏱️ *Time Stop Max:* `{MAX_DAYS} Sessioni`"
         )
         send_telegram(msg)
-        print("✅ Alert DAX inviato con livelli calcolati!")
+        print("✅ Alert DAX inviato con successo!")
     else:
         print("⚖️ DAX: Nessun nuovo breakout confermato.")
 
