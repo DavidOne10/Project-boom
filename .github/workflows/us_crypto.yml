@@ -21,7 +21,7 @@ jobs:
       - name: Installazione Dipendenze
         run: |
           python -m pip install --upgrade pip
-          pip install requests pandas numpy
+          pip install requests pandas numpy yfinance
 
       - name: Esecuzione Scansione Real-Time
         env:
@@ -31,4 +31,3 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
         run: |
           python checker.py
-
