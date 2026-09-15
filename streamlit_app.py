@@ -12,10 +12,10 @@ import pytz
 # =============================================================================
 st.set_page_config(page_title="Trading Dashboard PRO", page_icon="📈", layout="wide")
 
+# Recupero automatico dai Secrets o dalle variabili d'ambiente
 API_KEY = os.environ.get("API_KEY") or st.secrets.get("API_KEY", "")
 SECRET_KEY = os.environ.get("SECRET_KEY") or st.secrets.get("SECRET_KEY", "")
 ALPACA_DATA_URL = "https://data.alpaca.markets/v2"
-ALPACA_CRYPTO_URL = "https://data.alpaca.markets/v1beta3/crypto/us/bars"
 ALPACA_TRADING_URL = "https://paper-api.alpaca.markets/v2"
 
 HEADERS = {"APCA-API-KEY-ID": API_KEY, "APCA-API-SECRET-KEY": SECRET_KEY}
@@ -54,6 +54,8 @@ st.sidebar.write("🪙 Crypto (BTC/ETH): 🟢 24/7")
 st.title("📈 Trading Dashboard — Multi-Asset PRO")
 st.write("Monitoraggio segnali, diagnostica filtri ed esecuzione ordini in tempo reale.")
 
+global_signals = {} # Raccoglitore segnali per l'esecuzione ordini
+
 # =============================================================================
 # 🇺🇸 SEZIONE 1: MERCATI USA (ORB 15M)
 # =============================================================================
@@ -74,7 +76,6 @@ def get_usa_data(symbol):
         return pd.DataFrame()
 
 usa_assets = {"S&P 500": "SPY", "WTI": "USO", "Oro": "GLD"}
-global_signals = {} # Raccoglitore segnali per l'esecuzione
 
 with st.expander("🔍 Diagnostica Mercati USA", expanded=True):
     usa_cols = st.columns(len(usa_assets))
@@ -117,21 +118,26 @@ with st.expander("🔍 Diagnostica Mercati USA", expanded=True):
                 st.write("⏳ In attesa della candela delle 09:30 EST (ORB).")
 
 # =============================================================================
-# 🪙 SEZIONE 2: CRYPTO (TREND FOLLOWING 24/7)
+# 🪙 SEZIONE 2: CRYPTO (TREND FOLLOWING 24/7) - FIX ENCODING URL
 # =============================================================================
 st.divider()
 st.header("🪙 Crypto — Donchian Breakout & Trend Following")
 
 @st.cache_data(ttl=300)
 def get_crypto_data(symbol):
-    url = f"{ALPACA_CRYPTO_URL}?symbols={symbol}&timeframe=1D&limit=100"
+    url = "https://data.alpaca.markets/v1beta3/crypto/us/bars"
+    params = {"symbols": symbol, "timeframe": "1D", "limit": 100}
     try:
-        res = requests.get(url, headers=HEADERS, timeout=5).json()
-        df = pd.DataFrame(res.get("bars", {}).get(symbol, []))
-        if df.empty: return df
+        res = requests.get(url, headers=HEADERS, params=params, timeout=5)
+        if res.status_code != 200:
+            return pd.DataFrame()
+        data = res.json().get("bars", {}).get(symbol, [])
+        df = pd.DataFrame(data)
+        if df.empty:
+            return pd.DataFrame()
         df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close'}, inplace=True)
         return df[['Open', 'High', 'Low', 'Close']]
-    except:
+    except Exception:
         return pd.DataFrame()
 
 crypto_assets = {"Bitcoin": "BTC/USD", "Ethereum": "ETH/USD"}
@@ -143,14 +149,14 @@ with st.expander("🔍 Diagnostica Crypto", expanded=True):
         with cry_cols[idx]:
             st.subheader(f"{name} ({sym})")
             if df.empty:
-                st.warning("API Alpaca Crypto inaccessibili.")
+                st.warning("Dati Crypto in caricamento o temporaneamente non disponibili.")
                 continue
             
             df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
             df['High_20'] = df['Close'].shift(1).rolling(20).max()
             
             last = df.iloc[-1]
-            c, e50, h20 = last['Close'], last['EMA_50'], last['High_20']
+            c, e50, h20 = float(last['Close']), float(last['EMA_50']), float(last['High_20'])
             
             st.metric("Prezzo Attuale", f"${c:,.2f}")
             st.write(f"**EMA 50:** ${e50:,.2f} | **Max 20g:** ${h20:,.2f}")
@@ -183,7 +189,7 @@ with st.expander("🔍 Diagnostica Europa", expanded=True):
     df_dax['High_20'] = df_dax['Close'].shift(1).rolling(20).max()
     
     l_dax = df_dax.iloc[-1]
-    c_dax, ema_dax, h20_dax = l_dax['Close'], l_dax['EMA_50'], l_dax['High_20']
+    c_dax, ema_dax, h20_dax = float(l_dax['Close']), float(l_dax['EMA_50']), float(l_dax['High_20'])
     
     st.metric("DAX Spot (^GDAXI)", f"{c_dax:,.2f}")
     
