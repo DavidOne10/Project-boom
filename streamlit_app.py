@@ -12,7 +12,6 @@ import pytz
 # =============================================================================
 st.set_page_config(page_title="Trading Dashboard PRO", page_icon="📈", layout="wide")
 
-# Recupero credenziali in modo sicuro
 API_KEY = os.environ.get("API_KEY") or st.secrets.get("API_KEY", "")
 SECRET_KEY = os.environ.get("SECRET_KEY") or st.secrets.get("SECRET_KEY", "")
 
@@ -21,7 +20,6 @@ ALPACA_DATA_URL = "https://data.alpaca.markets/v2"
 
 HEADERS = {"APCA-API-KEY-ID": API_KEY, "APCA-API-SECRET-KEY": SECRET_KEY}
 
-# Raccoglitore globale per i segnali attivi (utilizzato poi nel terminale ordini)
 global_signals = {}
 
 # =============================================================================
@@ -49,9 +47,7 @@ else:
 
 st.sidebar.divider()
 st.sidebar.subheader("🏛️ Stato Mercati")
-# Wall Street: 13:30 - 20:00 UTC (15:30 - 22:00 CET)
 is_us_open = 13 <= now_utc.hour < 20
-# Europa (DAX): 07:00 - 15:30 UTC (09:00 - 17:30 CET)
 is_eu_open = 7 <= now_utc.hour < 15
 
 st.sidebar.write(f"🇺🇸 Wall Street: {'🟢 APERTA' if is_us_open else '🔴 CHIUSA'}")
@@ -69,7 +65,6 @@ st.write("Monitoraggio segnali, diagnostica filtri ed esecuzione ordini in tempo
 # =============================================================================
 @st.cache_data(ttl=60)
 def fetch_yf_data(ticker, period="6mo", interval="1d"):
-    """Scarica dati storici da Yahoo Finance pulendo l'eventuale MultiIndex delle colonne."""
     try:
         df = yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
         if isinstance(df.columns, pd.MultiIndex):
@@ -82,7 +77,6 @@ def fetch_yf_data(ticker, period="6mo", interval="1d"):
 
 @st.cache_data(ttl=30)
 def fetch_us_intraday_alpaca(symbol):
-    """Scarica candele 15M da Alpaca IEX per la strategia US ORB."""
     if not API_KEY or not SECRET_KEY:
         return pd.DataFrame()
     url = f"{ALPACA_DATA_URL}/stocks/bars?symbols={symbol}&timeframe=15Min&limit=100&feed=iex"
@@ -118,7 +112,6 @@ with st.expander("🔍 Diagnostica Mercati USA", expanded=True):
         with usa_cols[idx]:
             st.subheader(f"{name} ({alpaca_sym})")
             
-            # Durante la sessione usa Alpaca Intraday, altrimenti fallback su Yahoo Finance
             df_intra = fetch_us_intraday_alpaca(alpaca_sym) if is_us_open else pd.DataFrame()
             
             if not df_intra.empty:
@@ -144,16 +137,15 @@ with st.expander("🔍 Diagnostica Mercati USA", expanded=True):
                     
                     if cond_long:
                         st.success("🟢 SEGNALE LONG VALIDO")
-                        global_signals[alpaca_sym] = {"dir": "LONG", "entry": curr_p}
+                        global_signals[alpaca_sym] = {"dir": "LONG", "entry": curr_p, "type": "US"}
                     elif cond_short:
                         st.error("🔴 SEGNALE SHORT VALIDO")
-                        global_signals[alpaca_sym] = {"dir": "SHORT", "entry": curr_p}
+                        global_signals[alpaca_sym] = {"dir": "SHORT", "entry": curr_p, "type": "US"}
                     else:
                         st.info("⚖️ Nessun setup confermato.")
                 else:
                     st.write("⏳ In attesa della candela ORB (09:30 EST).")
             else:
-                # Se la sessione intraday è chiusa, mostriamo lo stato Daily via yfinance
                 df_daily = fetch_yf_data(yf_sym, period="6mo", interval="1d")
                 if not df_daily.empty and len(df_daily) >= 20:
                     df_daily['EMA_50'] = df_daily['Close'].ewm(span=50, adjust=False).mean()
@@ -164,9 +156,9 @@ with st.expander("🔍 Diagnostica Mercati USA", expanded=True):
                     ema = float(df_daily['EMA_50'].iloc[-1])
                     h20 = float(df_daily['High_20'].iloc[-1])
                     
-                    st.metric("Ultimo Chiusura", f"${curr_p:.2f}")
+                    st.metric("Ultima Chiusura", f"${curr_p:.2f}")
                     st.write(f"**EMA 50:** ${ema:.2f} | **Max 20g:** ${h20:.2f}")
-                    st.info("🌙 Mercato Chiuso. Attesa sessione 15:30 CET.")
+                    st.info("🌙 Mercato Chiuso. Attesa sessione 15:30 CEST.")
                 else:
                     st.warning("Dati non disponibili.")
 
@@ -211,7 +203,7 @@ with st.expander("🔍 Diagnostica Crypto", expanded=True):
             
             if cond_ema and cond_brk:
                 st.success("🚀 SEGNALE LONG VALIDO")
-                global_signals[alpaca_sym] = {"dir": "LONG", "entry": c}
+                global_signals[alpaca_sym] = {"dir": "LONG", "entry": c, "type": "CRYPTO"}
             else:
                 st.info("⚖️ In accumulazione / Nessun breakout.")
 
@@ -241,14 +233,14 @@ with st.expander("🔍 Diagnostica Europa", expanded=True):
         
         if c_dax > ema_dax and c_dax > h20_dax:
             st.success("🟢 SEGNALE LONG DAX ATTIVO (Applica su ETF 3X)")
-            global_signals["^GDAXI"] = {"dir": "LONG", "entry": c_dax}
+            global_signals["^GDAXI"] = {"dir": "LONG", "entry": c_dax, "type": "DAX"}
         else:
             st.info("⚖️ Nessun segnale confermato.")
     else:
         st.warning("Dati DAX non disponibili.")
 
 # =============================================================================
-# 🎯 TERMINALE ORDINI (FINECO & ALPACA)
+# 🎯 TERMINALE ORDINI CON BRACKET ORDERS AUTOMATICI
 # =============================================================================
 st.divider()
 st.header("🚀 Terminale Operativo & Convertitore")
@@ -256,11 +248,11 @@ st.header("🚀 Terminale Operativo & Convertitore")
 all_assets = ["SPY", "USO", "GLD", "BTC/USD", "ETH/USD"]
 sel_asset = st.selectbox("Seleziona Asset da gestire:", all_assets)
 
-res = global_signals.get(sel_asset, {"dir": "N/D", "entry": 100.0})
+res = global_signals.get(sel_asset, {"dir": "N/D", "entry": 100.0, "type": "US"})
 
 col_f1, col_f2, col_f3 = st.columns(3)
 with col_f1:
-    fineco_val = st.number_input("Prezzo Fineco / Piattaforma:", value=float(res['entry']), step=0.1)
+    entry_val = st.number_input("Prezzo di Ingresso (USD/EUR):", value=float(res['entry']), step=0.1)
 with col_f2:
     qty_val = st.number_input("Quantità / Size:", value=1.0, min_value=0.01)
 with col_f3:
@@ -270,30 +262,62 @@ with col_f3:
     else:
         dir_val = st.radio("Direzione Manuale:", ["LONG", "SHORT"], horizontal=True)
 
-f_tp = fineco_val * 1.015 if dir_val == "LONG" else fineco_val * 0.985
-f_sl = fineco_val * 0.995 if dir_val == "LONG" else fineco_val * 1.005
+# Impostazione percentuali TP/SL dinamiche in base alla strategia dell'asset
+if sel_asset in ["BTC/USD", "ETH/USD"]:
+    tp_mult, sl_mult = 1.050, 0.980 # Crypto: TP +5.0%, SL -2.0%
+elif sel_asset == "^GDAXI":
+    tp_mult, sl_mult = 1.050, 0.9833 # DAX Spot: TP +5.0%, SL -1.67% (pari a +15% / -5% su 3X)
+else:
+    tp_mult, sl_mult = 1.015, 0.992 # US Stocks ORB: TP +1.5%, SL -0.8%
+
+if dir_val == "LONG":
+    f_tp = entry_val * tp_mult
+    f_sl = entry_val * sl_mult
+else:
+    f_tp = entry_val * (2 - tp_mult)
+    f_sl = entry_val * (2 - sl_mult)
 
 m1, m2, m3 = st.columns(3)
-m1.metric("Ingresso", f"{fineco_val:.2f}")
-m2.metric("🎯 TAKE PROFIT (+1.5%)", f"{f_tp:.2f}")
-m3.metric("🔴 STOP LOSS (-0.5%)", f"{f_sl:.2f}")
+m1.metric("Ingresso", f"{entry_val:.2f}")
+m2.metric("🎯 TAKE PROFIT", f"{f_tp:.2f}")
+m3.metric("🔴 STOP LOSS", f"{f_sl:.2f}")
 
-if st.button(f"⚡ Esegui Ordine {dir_val} su Alpaca", type="primary"):
+if st.button(f"⚡ Esegui Ordine {dir_val} (Bracket) su Alpaca", type="primary"):
     if not API_KEY:
         st.error("Inserisci le API Keys di Alpaca nei Secrets per eseguire l'ordine.")
     else:
         side = "buy" if dir_val == "LONG" else "sell"
-        order_data = {
-            "symbol": sel_asset,
-            "qty": str(qty_val),
-            "side": side,
-            "type": "market",
-            "time_in_force": "gtc"
-        }
+        is_crypto = "/" in sel_asset
+        
+        # Le azioni usano Bracket Order (Ingresso + TP + SL automatici).
+        # Le Crypto su Alpaca non supportano la classe bracket via API, quindi usano Market semplice.
+        if is_crypto:
+            order_data = {
+                "symbol": sel_asset,
+                "qty": str(qty_val),
+                "side": side,
+                "type": "market",
+                "time_in_force": "gtc"
+            }
+        else:
+            order_data = {
+                "symbol": sel_asset,
+                "qty": str(qty_val),
+                "side": side,
+                "type": "market",
+                "time_in_force": "gtc",
+                "order_class": "bracket",
+                "take_profit": {"limit_price": str(round(f_tp, 2))},
+                "stop_loss": {"stop_price": str(round(f_sl, 2))}
+            }
+            
         try:
             r = requests.post(f"{ALPACA_TRADING_URL}/orders", json=order_data, headers=HEADERS)
             if r.status_code in [200, 201]:
-                st.success(f"✅ Ordine piazzato con successo! ID: {r.json().get('id')}")
+                if is_crypto:
+                    st.success(f"✅ Ordine Crypto eseguito! ID: {r.json().get('id')}\n*(Piazzi TP/SL manualmente poiché Alpaca non supporta Bracket su Crypto)*")
+                else:
+                    st.success(f"✅ Ordine BRACKET (Ingresso + TP + SL) piazzato con successo! ID: {r.json().get('id')}")
             else:
                 st.error(f"❌ Errore Alpaca: {r.text}")
         except Exception as e:
