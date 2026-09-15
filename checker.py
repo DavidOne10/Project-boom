@@ -120,12 +120,16 @@ def check_us_stocks():
     symbols = ["SPY", "USO", "GLD"]
     print(f"📈 Avvio scansione ORB 15m su {symbols} via Alpaca API...")
 
+    # Data di inizio: 7 giorni fa per garantire storico sufficiente
+    start_date = now_ny - timedelta(days=7)
+
     for sym in symbols:
         try:
             request_params = StockBarsRequest(
                 symbol_or_symbols=sym,
                 timeframe=TimeFrame(15, TimeFrameUnit.Minute),
-                limit=200
+                start=start_date,
+                feed=DataFeed.IEX  # Forzatura per account Alpaca gratuito
             )
             bars = alpaca_client.get_stock_bars(request_params)
             df = bars.df
@@ -136,8 +140,8 @@ def check_us_stocks():
                 else:
                     continue
 
-            if df.empty or len(df) < 50:
-                print(f"⚠️ Dati insufficienti per {sym} su Alpaca.")
+            if df.empty or len(df) < 30:
+                print(f"⚠️ Dati insufficienti ({len(df)} bar) per {sym} su Alpaca.")
                 continue
 
             # Gestione Timezone EST
@@ -148,7 +152,7 @@ def check_us_stocks():
                 print(f"⏳ Nessuna candela per oggi su {sym}.")
                 continue
 
-            # ORB 15m (Candela 09:30 EST)
+            # ORB 15m (Candela delle 09:30 EST)
             orb_first_bar = today_df[(today_df['date_est'].dt.hour == 9) & (today_df['date_est'].dt.minute == 30)]
 
             if orb_first_bar.empty:
@@ -158,7 +162,7 @@ def check_us_stocks():
             orb_high = float(orb_first_bar['high'].iloc[0])
             orb_low = float(orb_first_bar['low'].iloc[0])
 
-            # Indicatori: EMA200, SMA50 e RSI(14)
+            # Indicatori
             df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
             df['SMA50'] = df['close'].rolling(50).mean()
             
@@ -177,10 +181,8 @@ def check_us_stocks():
             sma50 = float(bar['SMA50'])
             rsi = float(bar['RSI'])
 
-            # Filtro RSI (25 - 75)
             rsi_valid = 25 <= rsi <= 75
 
-            # Condizione Crossover Breakout + Filtri Trend
             is_long = (c > orb_high) and (prev_c <= orb_high) and (c > ema200) and (c > sma50) and rsi_valid
             is_short = (c < orb_low) and (prev_c >= orb_low) and (c < ema200) and (c < sma50) and rsi_valid
 
@@ -203,6 +205,7 @@ def check_us_stocks():
 
         except Exception as e:
             print(f"❌ Errore durante la scansione Alpaca per {sym}: {e}")
+
 
 # ==========================================
 # 3. MAIN EXECUTION
