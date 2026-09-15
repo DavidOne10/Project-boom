@@ -4,6 +4,9 @@ import requests
 import pandas as pd
 import numpy as np
 import yfinance as yf
+from datetime import datetime, timedelta
+from alpaca.data.enums import DataFeed
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
