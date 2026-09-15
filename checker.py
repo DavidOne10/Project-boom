@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 try:
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
     ALPACA_KEY = os.environ.get("ALPACA_API_KEY")
     ALPACA_SECRET = os.environ.get("ALPACA_SECRET_KEY")
     alpaca_client = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET) if ALPACA_KEY and ALPACA_SECRET else None
