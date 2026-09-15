@@ -1,15 +1,20 @@
 import os
 import sys
 import requests
+import time
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-# --- 1. CONTROLLO FINESTRA OPERATIVA EUROPA (09:00 - 18:00 Italia) ---
+# --- 1. CONTROLLO FINESTRA OPERATIVA EUROPA (Feriali 09:00 - 22:00 Italia) ---
 now_rome = datetime.now(ZoneInfo("Europe/Rome"))
-if len(sys.argv) == 1 and not (9 <= now_rome.hour < 18):
-    print(f"🌙 Fuori orario Europa ({now_rome.strftime('%H:%M %Z')}). Scansione saltata.")
+is_weekday = now_rome.weekday() < 5
+is_working_hours = 9 <= now_rome.hour <= 22
+
+# Se eseguito manualmente con --test bypassa il blocco orario
+if len(sys.argv) == 1 and not (is_weekday and is_working_hours):
+    print(f"🌙 Fuori orario/weekend Europa ({now_rome.strftime('%a %H:%M %Z')}). Scansione saltata.")
     sys.exit(0)
 
 # --- 2. CREDENZIALI TELEGRAM ---
@@ -35,7 +40,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "--test":
     send_telegram("🧪 *TEST DAX 3X CHECKER — TELEGRAM OPERATIVO*")
     sys.exit(0)
 
-# --- 3. PARAMETRI DEFINITIVI ESTRATTI DAL BACKTEST (R/R 1:3) ---
+# --- 3. PARAMETRI DEFINITIVI BACKTEST (R/R 1:3) ---
 SL_PCT = 0.0500       # Stop Loss: -5.00%
 TP_PCT = 0.1500       # Take Profit: +15.00%
 MAX_DAYS = 6          # Time Stop: 6 Sessioni
@@ -44,35 +49,39 @@ LOOKBACK_DAYS = 20    # Breakout a 20 Giorni di CHIUSURA
 print(f"🔍 Avvio controllo DAX 3X ({now_rome.strftime('%H:%M CEST')})...")
 
 try:
-    # Download Dati Giornalieri
+    # Download Dati Giornalieri con gestione errori
     df = yf.download("^GDAXI", period="4mo", interval="1d", progress=False, auto_adjust=True)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
     if df.empty or len(df) < 25:
-        print("⚠️ Dati DAX non disponibili.")
+        print("⚠️ Dati DAX non disponibili o bloccati da Yahoo.")
         sys.exit(0)
 
     df.index = pd.to_datetime(df.index)
     today_str = now_rome.strftime("%Y-%m-%d")
     last_date_str = df.index[-1].strftime("%Y-%m-%d")
 
-    # Patch: Se la candela odierna manca, viene ricostruita dai dati intraday a 5m
-    if last_date_str != today_str:
-        df_intra = yf.download("^GDAXI", period="1d", interval="5m", progress=False, auto_adjust=True)
-        if isinstance(df_intra.columns, pd.MultiIndex):
-            df_intra.columns = df_intra.columns.get_level_values(0)
-            
-        if not df_intra.empty:
-            new_row = pd.DataFrame([{
-                "Open": float(df_intra["Open"].iloc[0]),
-                "High": float(df_intra["High"].max()),
-                "Low": float(df_intra["Low"].min()),
-                "Close": float(df_intra["Close"].iloc[-1])
-            }], index=[pd.to_datetime(today_str)])
-            df = pd.concat([df, new_row])
+    # Patch Intraday: Se la candela odierna manca durante la sessione, si ricostruisce
+    if last_date_str != today_str and now_rome.hour >= 9:
+        time.sleep(1) # Pausa di cortesia per evitare HTTP 429
+        try:
+            df_intra = yf.download("^GDAXI", period="1d", interval="5m", progress=False, auto_adjust=True)
+            if isinstance(df_intra.columns, pd.MultiIndex):
+                df_intra.columns = df_intra.columns.get_level_values(0)
+                
+            if not df_intra.empty:
+                new_row = pd.DataFrame([{
+                    "Open": float(df_intra["Open"].iloc[0]),
+                    "High": float(df_intra["High"].max()),
+                    "Low": float(df_intra["Low"].min()),
+                    "Close": float(df_intra["Close"].iloc[-1])
+                }], index=[pd.to_datetime(today_str)])
+                df = pd.concat([df, new_row])
+        except Exception as patch_err:
+            print(f"⚠️ Patch intraday non riuscita: {patch_err}. Uso l'ultima candela disponibile.")
 
-    # --- 4. CALCOLO INDICATORI TECNICI (ESATTI DAL TUO BACKTEST) ---
+    # --- 4. CALCOLO INDICATORI TECNICI ---
     df['ema50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['high_20'] = df['Close'].shift(1).rolling(LOOKBACK_DAYS).max()
 
@@ -85,28 +94,30 @@ try:
     h20 = float(last_row['high_20'])
     prev_h20 = float(prev_row['high_20'])
 
-    # Crossover: il breakout deve avvenire OGGI (evita notifiche ripetute durante il giorno)
+    # Crossover su base CHIUSURA
     is_breakout = (c > h20) and (prev_c <= prev_h20)
     signal_today = is_breakout and (c > ema50)
 
+    # Calcolo dei livelli di prezzo effettivi per l'eseguibile
+    tp_price_spot = c * (1 + TP_PCT)
+    sl_price_spot = c * (1 - SL_PCT)
+
     print(f"📊 DAX Spot: {c:.2f} | EMA50: {ema50:.2f} | Max 20g (Close): {h20:.2f}")
 
-    # --- 5. INVIO NOTIFICA TELEGRAM ---
+    # --- 5. INVIO NOTIFICA TELEGRAM COMPLETA DI LIVELLI ---
     if signal_today:
         msg = (
-            f"🚨 *SEGNALE STRATEGIA DAX 3X (OTTIMIZZATO)*\n\n"
-            f"📅 Data: `{today_str}`\n"
-            f"📈 Chiusura Spot: `{c:.2f}`\n"
-            f"📊 EMA50: `{ema50:.2f}` | Max 20g: `{h20:.2f}`\n\n"
+            f"🚨 *SEGNALE STRATEGIA DAX 3X (EOD)*\n\n"
+            f"📅 *Data Segnale:* `{today_str}`\n"
+            f"📈 *Prezzo Chiusura Spot:* `{c:,.2f}`\n"
+            f"📊 *Filtro EMA50:* `{ema50:,.2f}` | *Max 20g:* `{h20:,.2f}`\n\n"
             f"🟢 *AZIONE DOMANI:* Comprare in APERTURA (09:00)\n"
-            f"🎯 *Take Profit:* +{TP_PCT*100:.1f}%\n"
-            f"🛡️ *Stop Loss:* -{SL_PCT*100:.1f}%\n"
-            f"⏱️ *Time Stop:* {MAX_DAYS} Sessioni"
+            f"🎯 *Take Profit (+15%):* `{tp_price_spot:,.2f}`\n"
+            f"🛡️ *Stop Loss (-5%):* `{sl_price_spot:,.2f}`\n"
+            f"⏱️ *Time Stop Max:* `{MAX_DAYS} Sessioni`\n\n"
+            f"💡 _Nota: I livelli TP/SL sopra indicati sono speculari sul Certificate/ETF 3X._"
         )
         send_telegram(msg)
-        print("✅ Alert DAX inviato!")
+        print("✅ Alert DAX inviato con livelli calcolati!")
     else:
         print("⚖️ DAX: Nessun nuovo breakout confermato.")
-
-except Exception as e:
-    print(f"❌ Errore DAX: {e}")
