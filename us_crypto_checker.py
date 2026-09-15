@@ -3,6 +3,7 @@ import sys
 import requests
 import pandas as pd
 import numpy as np
+import yfinance as yf
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -15,8 +16,8 @@ if len(sys.argv) == 1 and not (9 <= now_rome.hour < 22):
 # --- 2. SECRETS E CREDENZIALI ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID")
-ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
-ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
+ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY") or os.environ.get("API_KEY")
+ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("SECRET_KEY")
 
 ALPACA_DATA_URL = "https://data.alpaca.markets"
 
@@ -39,7 +40,7 @@ if len(sys.argv) > 1 and sys.argv[1] == "--test":
     send_telegram("🧪 *TEST SYSTEM OK — ALPACA + TELEGRAM OPERATIVI (09:00-22:00)*")
     sys.exit(0)
 
-# --- 3. FETCH DATI REAL-TIME DA ALPACA API ---
+# --- 3. FETCH DATI STOCKS (ALPACA REAL-TIME 15M) ---
 def get_alpaca_stock_bars(symbol, timeframe="15Min", limit=500):
     headers = {"APCA-API-KEY-ID": ALPACA_API_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY}
     url = f"{ALPACA_DATA_URL}/v2/stocks/bars?symbols={symbol}&timeframe={timeframe}&limit={limit}&feed=iex"
@@ -50,7 +51,7 @@ def get_alpaca_stock_bars(symbol, timeframe="15Min", limit=500):
         if not data: return pd.DataFrame()
         
         df = pd.DataFrame(data)
-        df['t'] = pd.to_datetime(df['t'])
+        df['t'] = pd.to_datetime(df['t'], utc=True)
         df.set_index('t', inplace=True)
         df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close'}, inplace=True)
         return df
@@ -58,31 +59,25 @@ def get_alpaca_stock_bars(symbol, timeframe="15Min", limit=500):
         print(f"❌ Errore Alpaca Stock {symbol}: {e}")
         return pd.DataFrame()
 
-def get_alpaca_crypto_bars(symbol, timeframe="15Min", limit=500):
-    headers = {"APCA-API-KEY-ID": ALPACA_API_KEY, "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY}
-    url = f"{ALPACA_DATA_URL}/v1beta3/crypto/us/bars?symbols={symbol}&timeframe={timeframe}&limit={limit}"
+# --- 4. FETCH DATI CRYPTO (YFINANCE DAILY PER DONCHIAN 20G REALE) ---
+def get_crypto_daily_yf(yf_symbol):
     try:
-        res = requests.get(url, headers=headers, timeout=15)
-        if res.status_code != 200: return pd.DataFrame()
-        data = res.json().get("bars", {}).get(symbol, [])
-        if not data: return pd.DataFrame()
-        
-        df = pd.DataFrame(data)
-        df['t'] = pd.to_datetime(df['t'])
-        df.set_index('t', inplace=True)
-        df.rename(columns={'o': 'Open', 'h': 'High', 'l': 'Low', 'c': 'Close'}, inplace=True)
-        return df
+        df = yf.download(yf_symbol, period="6mo", interval="1d", progress=False, auto_adjust=True)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if df.empty: return pd.DataFrame()
+        return df[['Open', 'High', 'Low', 'Close']]
     except Exception as e:
-        print(f"❌ Errore Alpaca Crypto {symbol}: {e}")
+        print(f"❌ Errore Crypto YFinance {yf_symbol}: {e}")
         return pd.DataFrame()
 
 # Mappatura Asset
 ASSETS = {
-    "S&P 500 (SPY)":  {"symbol": "SPY",      "type": "STOCK_ORB"},
-    "PETROLIO (USO)": {"symbol": "USO",      "type": "STOCK_ORB"},
-    "ORO (GLD)":      {"symbol": "GLD",      "type": "STOCK_ORB"},
-    "BITCOIN":        {"symbol": "BTC/USD",  "type": "CRYPTO_TRAILING"},
-    "ETHEREUM":       {"symbol": "ETH/USD",  "type": "CRYPTO_TRAILING"}
+    "S&P 500 (SPY)":  {"symbol": "SPY",      "yf_symbol": "SPY",     "type": "STOCK_ORB"},
+    "PETROLIO (USO)": {"symbol": "USO",      "yf_symbol": "USO",     "type": "STOCK_ORB"},
+    "ORO (GLD)":      {"symbol": "GLD",      "yf_symbol": "GLD",     "type": "STOCK_ORB"},
+    "BITCOIN":        {"symbol": "BTC/USD",  "yf_symbol": "BTC-USD", "type": "CRYPTO_TRAILING"},
+    "ETHEREUM":       {"symbol": "ETH/USD",  "yf_symbol": "ETH-USD", "type": "CRYPTO_TRAILING"}
 }
 
 now_est = datetime.now(ZoneInfo("America/New_York"))
@@ -90,30 +85,26 @@ is_us_market_open = (now_est.weekday() < 5) and (
     now_est.replace(hour=9, minute=30, second=0) <= now_est <= now_est.replace(hour=16, minute=0, second=0)
 )
 
-print(f"🚀 Avvio scansione Real-Time Alpaca ({now_rome.strftime('%H:%M CEST')})...")
+print(f"🚀 Avvio scansione Real-Time ({now_rome.strftime('%H:%M CEST')})...")
 
 for asset_name, config in ASSETS.items():
     symbol = config["symbol"]
+    yf_sym = config["yf_symbol"]
     strat_type = config["type"]
-
-    if strat_type == "STOCK_ORB" and not is_us_market_open:
-        print(f"🌙 [{asset_name}] Mercato US chiuso. Scansione saltata.")
-        continue
-
-    # Download dati da Alpaca
-    if strat_type == "STOCK_ORB":
-        df = get_alpaca_stock_bars(symbol)
-    else:
-        df = get_alpaca_crypto_bars(symbol)
-
-    if df.empty: continue
-
-    df.index = df.index.tz_convert("America/New_York")
-    df['date'] = df.index.date
-    df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
 
     # --- STRATEGIA 1: STOCK/COMMODITIES ORB 15M + PIVOTS ---
     if strat_type == "STOCK_ORB":
+        if not is_us_market_open:
+            print(f"🌙 [{asset_name}] Mercato US chiuso. Scansione saltata.")
+            continue
+
+        df = get_alpaca_stock_bars(symbol)
+        if df.empty: continue
+
+        df.index = df.index.tz_convert("America/New_York")
+        df['date'] = df.index.date
+        df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+
         daily = df.groupby('date').agg({'High': 'max', 'Low': 'min', 'Close': 'last'})
         daily['pivot'] = (daily['High'] + daily['Low'] + daily['Close']) / 3
         daily['R1'] = (2 * daily['pivot']) - daily['Low']
@@ -130,15 +121,15 @@ for asset_name, config in ASSETS.items():
         orb_bar = today_bars[(today_bars.index.hour == 9) & (today_bars.index.minute == 30)]
         if orb_bar.empty: continue
 
-        orb_high, orb_low = float(orb_bar['High'].values[0]), float(orb_bar['Low'].values[0])
+        orb_high, orb_low = float(orb_bar['High'].iloc[0]), float(orb_bar['Low'].iloc[0])
         session_bars = today_bars[(today_bars.index.hour > 9) | ((today_bars.index.hour == 9) & (today_bars.index.minute >= 45))]
         if session_bars.empty: continue
 
-        # Verifica segnale prioritario sulla candela più recente
         bar = session_bars.iloc[-1]
         c = float(bar['Close'])
-        prev_c = float(session_bars.iloc[-2]['Close']) if len(session_bars) > 1 else float(orb_bar['Close'].values[0])
-        ema, sma = float(bar['EMA_200']), float(bar['SMA_50']) if not pd.isna(bar['SMA_50']) else c
+        prev_c = float(session_bars.iloc[-2]['Close']) if len(session_bars) > 1 else float(orb_bar['Close'].iloc[0])
+        ema = float(bar['EMA_200'])
+        sma = float(bar['SMA_50']) if not pd.isna(bar['SMA_50']) else c
         rsi = float(bar['RSI']) if not pd.isna(bar['RSI']) else 50
 
         is_long = (c > orb_high) and (prev_c <= orb_high) and (c > ema) and (c > sma) and (45 <= rsi <= 75)
@@ -169,19 +160,29 @@ for asset_name, config in ASSETS.items():
                     )
                     send_telegram(msg)
 
-    # --- STRATEGIA 2: CRYPTO DONCHIAN + TRAILING EXIT ---
+    # --- STRATEGIA 2: CRYPTO DONCHIAN 20G REALE + CROSSOVER ---
     elif strat_type == "CRYPTO_TRAILING":
+        df = get_crypto_daily_yf(yf_sym)
+        if df.empty or len(df) < 25: continue
+
+        df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
         df['Donchian_H'] = df['High'].shift(1).rolling(20).max()
         df['Donchian_L'] = df['Low'].shift(1).rolling(20).min()
         df['Trailing_SL_L'] = df['Low'].shift(1).rolling(10).min()
         df['Trailing_SL_H'] = df['High'].shift(1).rolling(10).max()
 
         bar = df.iloc[-1]
-        c, ema = float(bar['Close']), float(bar['EMA_200'])
-        d_high, d_low = float(bar['Donchian_H']), float(bar['Donchian_L'])
+        prev_bar = df.iloc[-2]
 
-        is_long = (c > d_high) and (c > ema)
-        is_short = (c < d_low) and (c < ema)
+        c = float(bar['Close'])
+        prev_c = float(prev_bar['Close'])
+        ema = float(bar['EMA_50'])
+        d_high, d_low = float(bar['Donchian_H']), float(bar['Donchian_L'])
+        prev_d_high, prev_d_low = float(prev_bar['Donchian_H']), float(prev_bar['Donchian_L'])
+
+        # Crossover giornaliero: scatta SOLO al momento del breakout reale
+        is_long = (c > d_high) and (prev_c <= prev_d_high) and (c > ema)
+        is_short = (c < d_low) and (prev_c >= prev_d_low) and (c < ema)
 
         if is_long or is_short:
             trail_sl = float(bar['Trailing_SL_L']) if is_long else float(bar['Trailing_SL_H'])
@@ -192,10 +193,9 @@ for asset_name, config in ASSETS.items():
                 f"🚨 *SEGNALE CRYPTO TREND — {asset_name}*\n\n"
                 f"🎯 *Azione:* {azione}\n"
                 f"📌 *Prezzo Attuale:* `{c:.2f}`\n"
-                f"🛡️ *Trailing Stop Dinamico (10p):* `{trail_sl:.2f}` (-{sl_pct:.2f}%)\n\n"
-                f"ℹ️ *Gestione Exit:* Mantieni la posizione finché il prezzo non infrange il Trailing Stop a 10 candele."
+                f"🛡️ *Trailing Stop Dinamico (10g):* `{trail_sl:.2f}` (-{sl_pct:.2f}%)\n\n"
+                f"ℹ️ *Gestione Exit:* Mantieni la posizione finché il prezzo non infrange il Trailing Stop a 10 giorni."
             )
             send_telegram(msg)
 
 print("Scansione completata.")
-
