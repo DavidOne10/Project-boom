@@ -12,7 +12,6 @@ now_rome = datetime.now(ZoneInfo("Europe/Rome"))
 is_weekday = now_rome.weekday() < 5
 is_working_hours = 9 <= now_rome.hour <= 22
 
-# Se eseguito manualmente con --test bypassa il blocco orario
 if len(sys.argv) == 1 and not (is_weekday and is_working_hours):
     print(f"🌙 Fuori orario/weekend Europa ({now_rome.strftime('%a %H:%M %Z')}). Scansione saltata.")
     sys.exit(0)
@@ -49,7 +48,7 @@ LOOKBACK_DAYS = 20    # Breakout a 20 Giorni di CHIUSURA
 print(f"🔍 Avvio controllo DAX 3X ({now_rome.strftime('%H:%M CEST')})...")
 
 try:
-    # Download Dati Giornalieri con gestione errori
+    # Download Dati Giornalieri
     df = yf.download("^GDAXI", period="4mo", interval="1d", progress=False, auto_adjust=True)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -62,9 +61,9 @@ try:
     today_str = now_rome.strftime("%Y-%m-%d")
     last_date_str = df.index[-1].strftime("%Y-%m-%d")
 
-    # Patch Intraday: Se la candela odierna manca durante la sessione, si ricostruisce
+    # Patch Intraday
     if last_date_str != today_str and now_rome.hour >= 9:
-        time.sleep(1) # Pausa di cortesia per evitare HTTP 429
+        time.sleep(1)
         try:
             df_intra = yf.download("^GDAXI", period="1d", interval="5m", progress=False, auto_adjust=True)
             if isinstance(df_intra.columns, pd.MultiIndex):
@@ -98,13 +97,12 @@ try:
     is_breakout = (c > h20) and (prev_c <= prev_h20)
     signal_today = is_breakout and (c > ema50)
 
-    # Calcolo dei livelli di prezzo effettivi per l'eseguibile
     tp_price_spot = c * (1 + TP_PCT)
     sl_price_spot = c * (1 - SL_PCT)
 
     print(f"📊 DAX Spot: {c:.2f} | EMA50: {ema50:.2f} | Max 20g (Close): {h20:.2f}")
 
-    # --- 5. INVIO NOTIFICA TELEGRAM COMPLETA DI LIVELLI ---
+    # --- 5. INVIO NOTIFICA TELEGRAM ---
     if signal_today:
         msg = (
             f"🚨 *SEGNALE STRATEGIA DAX 3X (EOD)*\n\n"
@@ -121,3 +119,6 @@ try:
         print("✅ Alert DAX inviato con livelli calcolati!")
     else:
         print("⚖️ DAX: Nessun nuovo breakout confermato.")
+
+except Exception as e:
+    print(f"❌ Errore DAX: {e}")
