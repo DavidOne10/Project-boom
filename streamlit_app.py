@@ -305,7 +305,7 @@ if st.button(f"⚡ Esegui Ordine {dir_val} (Bracket) su Alpaca", type="primary")
                 "qty": str(qty_val),
                 "side": side,
                 "type": "market",
-                "time_in_force: "day",
+                "time_in_force": "day",
                 "order_class": "bracket",
                 "take_profit": {"limit_price": str(round(f_tp, 2))},
                 "stop_loss": {"stop_price": str(round(f_sl, 2))}
