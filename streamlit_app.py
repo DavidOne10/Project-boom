@@ -147,9 +147,9 @@ with st.expander("🔍 Diagnostica Mercati USA", expanded=True):
                     st.write("⏳ In attesa della candela ORB (09:30 EST).")
             else:
                 df_daily = fetch_yf_data(yf_sym, period="6mo", interval="1d")
-                if not df_daily.empty and len(df_daily) >= 20:
+                if not df_daily.empty and len(df_daily) >= 25:
                     df_daily['EMA_50'] = df_daily['Close'].ewm(span=50, adjust=False).mean()
-                    df_daily['High_20'] = df_daily['Close'].shift(1).rolling(20).max()
+                    df_daily['High_20'] = df_daily['High'].shift(1).rolling(20).max()
                     
                     last = df_daily.iloc[-1]
                     curr_p = float(last['Close'])
@@ -163,7 +163,7 @@ with st.expander("🔍 Diagnostica Mercati USA", expanded=True):
                     st.warning("Dati non disponibili.")
 
 # =============================================================================
-# 🪙 SEZIONE 2: CRYPTO (TREND FOLLOWING 24/7)
+# 🪙 SEZIONE 2: CRYPTO (TREND FOLLOWING 24/7) — CORRETTA E SINCRONIZZATA
 # =============================================================================
 st.divider()
 st.header("🪙 Crypto — Donchian Breakout & Trend Following")
@@ -183,32 +183,39 @@ with st.expander("🔍 Diagnostica Crypto", expanded=True):
                 st.warning("Dati Crypto in caricamento o non disponibili.")
                 continue
             
+            # CORREZIONE: Usare High e Low (non Close) per rispecchiare checker.py
             df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
-            df['High_20'] = df['Close'].shift(1).rolling(20).max()
+            df['High_20'] = df['High'].shift(1).rolling(20).max()
+            df['Low_20'] = df['Low'].shift(1).rolling(20).min()
             
             last = df.iloc[-1]
             c = float(last['Close'])
             e50 = float(df['EMA_50'].iloc[-1])
             h20 = float(df['High_20'].iloc[-1])
+            l20 = float(df['Low_20'].iloc[-1])
             
             st.metric("Prezzo Attuale", f"${c:,.2f}")
-            st.write(f"**EMA 50:** ${e50:,.2f} | **Max 20g:** ${h20:,.2f}")
+            st.write(f"**EMA 50:** ${e50:,.2f} | **Max 20g:** ${h20:,.2f} | **Min 20g:** ${l20:,.2f}")
             
-            cond_ema = c > e50
-            cond_brk = c > h20
+            cond_long = (c > h20) and (c > e50)
+            cond_short = (c < l20) and (c < e50)
             
             st.write("### Esito Filtri:")
-            st.write(f"- **Trend (Prezzo > EMA50):** {'✅' if cond_ema else '❌'}")
-            st.write(f"- **Breakout (Prezzo > Max 20g):** {'✅' if cond_brk else '❌'}")
+            st.write(f"- **Trend (Prezzo > EMA50):** {'✅' if c > e50 else '❌'}")
+            st.write(f"- **Breakout High (Prezzo > Max 20g):** {'✅' if c > h20 else '❌'}")
+            st.write(f"- **Breakout Low (Prezzo < Min 20g):** {'✅' if c < l20 else '❌'}")
             
-            if cond_ema and cond_brk:
+            if cond_long:
                 st.success("🚀 SEGNALE LONG VALIDO")
                 global_signals[alpaca_sym] = {"dir": "LONG", "entry": c, "type": "CRYPTO"}
+            elif cond_short:
+                st.error("📉 SEGNALE SHORT VALIDO")
+                global_signals[alpaca_sym] = {"dir": "SHORT", "entry": c, "type": "CRYPTO"}
             else:
                 st.info("⚖️ In accumulazione / Nessun breakout.")
 
 # =============================================================================
-# 🇪🇺 SEZIONE 3: EUROPA (DAX SWING 3X)
+# 🇪🇺 SEZIONE 3: EUROPA (DAX SWING 3X) — CORRETTA
 # =============================================================================
 st.divider()
 st.header("🇪🇺 Mercati Europei — DAX Swing 3X")
@@ -217,7 +224,7 @@ with st.expander("🔍 Diagnostica Europa", expanded=True):
     df_dax = fetch_yf_data("^GDAXI", period="6mo", interval="1d")
     if not df_dax.empty and len(df_dax) >= 25:
         df_dax['EMA_50'] = df_dax['Close'].ewm(span=50, adjust=False).mean()
-        df_dax['High_20'] = df_dax['Close'].shift(1).rolling(20).max()
+        df_dax['High_20'] = df_dax['High'].shift(1).rolling(20).max()
         
         l_dax = df_dax.iloc[-1]
         c_dax = float(l_dax['Close'])
@@ -289,8 +296,6 @@ if st.button(f"⚡ Esegui Ordine {dir_val} (Bracket) su Alpaca", type="primary")
         side = "buy" if dir_val == "LONG" else "sell"
         is_crypto = "/" in sel_asset
         
-        # Le azioni usano Bracket Order (Ingresso + TP + SL automatici).
-        # Le Crypto su Alpaca non supportano la classe bracket via API, quindi usano Market semplice.
         if is_crypto:
             order_data = {
                 "symbol": sel_asset,
