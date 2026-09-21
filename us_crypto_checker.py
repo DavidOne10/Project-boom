@@ -183,38 +183,37 @@ for asset_name, config in ASSETS.items():
                     with open(CACHE_FILE, "w") as f:
                         json.dump(sent_alerts, f)
 
-    # --- STRATEGIA 2: CRYPTO DONCHIAN 20G REALE + CROSSOVER ---
+        # --- STRATEGIA 2: CRYPTO DONCHIAN 20G REALE + CROSSOVER ---
     elif strat_type == "CRYPTO_TRAILING":
-        df = get_crypto_daily_yf(yf_sym)
-        if df.empty or len(df) < 25: continue
+        # 1. Livelli giornalieri reali (Donchian 20G, EMA50, Trailing SL 10G)
+        df_daily = get_crypto_daily_yf(yf_sym)
+        if df_daily.empty or len(df_daily) < 25: continue
 
-        df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
-        df['Donchian_H'] = df['High'].shift(1).rolling(20).max()
-        df['Donchian_L'] = df['Low'].shift(1).rolling(20).min()
-        df['Trailing_SL_L'] = df['Low'].shift(1).rolling(10).min()
-        df['Trailing_SL_H'] = df['High'].shift(1).rolling(10).max()
+        df_daily['EMA_50'] = df_daily['Close'].ewm(span=50, adjust=False).mean()
+        df_daily['Donchian_H'] = df_daily['High'].shift(1).rolling(20).max()
+        df_daily['Donchian_L'] = df_daily['Low'].shift(1).rolling(20).min()
+        df_daily['Trailing_SL_L'] = df_daily['Low'].shift(1).rolling(10).min()
+        df_daily['Trailing_SL_H'] = df_daily['High'].shift(1).rolling(10).max()
 
-        bar = df.iloc[-1]
-        prev_bar = df.iloc[-2]
+        last_daily = df_daily.iloc[-1]
+        ema = float(last_daily['EMA_50'])
+        d_high, d_low = float(last_daily['Donchian_H']), float(last_daily['Donchian_L'])
 
-        c = float(bar['Close'])
-        prev_c = float(prev_bar['Close'])
-        ema = float(bar['EMA_50'])
-        d_high, d_low = float(bar['Donchian_H']), float(bar['Donchian_L'])
-        prev_d_high, prev_d_low = float(prev_bar['Donchian_H']), float(prev_bar['Donchian_L'])
+        # 2. Controllo incrocio sulla candela a 15 minuti (scatta 1 sola volta)
+        df_intra = yf.download(yf_sym, period="5d", interval="15m", progress=False, auto_adjust=True)
+        if isinstance(df_intra.columns, pd.MultiIndex):
+            df_intra.columns = df_intra.columns.get_level_values(0)
+        if df_intra.empty or len(df_intra) < 2: continue
 
-        is_long = (c > d_high) and (prev_c <= prev_d_high) and (c > ema)
-        is_short = (c < d_low) and (prev_c >= prev_d_low) and (c < ema)
+        c = float(df_intra['Close'].iloc[-1])       # Prezzo 15m attuale
+        prev_c = float(df_intra['Close'].iloc[-2])  # Prezzo 15m di 15 min fa
+
+        is_long = (c > d_high) and (prev_c <= d_high) and (c > ema)
+        is_short = (c < d_low) and (prev_c >= d_low) and (c < ema)
 
         if is_long or is_short:
             direction = "LONG" if is_long else "SHORT"
-            alert_key = f"{asset_name}_{direction}"
-
-            if sent_alerts.get(alert_key) == today_str:
-                print(f"ℹ️ Segnale {direction} per {asset_name} già notificato oggi ({today_str}). Saltato.")
-                continue
-
-            trail_sl = float(bar['Trailing_SL_L']) if is_long else float(bar['Trailing_SL_H'])
+            trail_sl = float(last_daily['Trailing_SL_L']) if is_long else float(last_daily['Trailing_SL_H'])
             sl_pct = (abs(c - trail_sl) / c) * 100
             azione = "COMPRA (Long) 📈" if is_long else "VENDI (Short) 📉"
 
@@ -225,10 +224,4 @@ for asset_name, config in ASSETS.items():
                 f"🛡️ *Trailing Stop Dinamico (10g):* `{trail_sl:.2f}` (-{sl_pct:.2f}%)\n\n"
                 f"ℹ️ *Gestione Exit:* Mantieni la posizione finché il prezzo non infrange il Trailing Stop a 10 giorni."
             )
-            
             send_telegram(msg)
-            sent_alerts[alert_key] = today_str
-            with open(CACHE_FILE, "w") as f:
-                json.dump(sent_alerts, f)
-
-print("Scansione completata.")
