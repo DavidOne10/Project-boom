@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import requests
 import pandas as pd
 import numpy as np
@@ -7,8 +8,20 @@ import yfinance as yf
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-# --- 1. CONTROLLO FINESTRA OPERATIVA LOCALE (09:00 - 22:00 Italia) ---
+# --- CACHE ANTI-SPAM TELEGRAM ---
+CACHE_FILE = "sent_alerts.json"
+sent_alerts = {}
+if os.path.exists(CACHE_FILE):
+    try:
+        with open(CACHE_FILE, "r") as f:
+            sent_alerts = json.load(f)
+    except Exception:
+        sent_alerts = {}
+
 now_rome = datetime.now(ZoneInfo("Europe/Rome"))
+today_str = now_rome.strftime("%Y-%m-%d")
+
+# --- 1. CONTROLLO FINESTRA OPERATIVA LOCALE (09:00 - 22:00 Italia) ---
 if len(sys.argv) == 1 and not (9 <= now_rome.hour < 22):
     print(f"🌙 Fuori orario operativo ({now_rome.strftime('%H:%M %Z')}). Scansione saltata.")
     sys.exit(0)
@@ -136,6 +149,13 @@ for asset_name, config in ASSETS.items():
         is_short = (c < orb_low) and (prev_c >= orb_low) and (c < ema) and (c < sma) and (25 <= rsi <= 55)
 
         if is_long or is_short:
+            direction = "LONG" if is_long else "SHORT"
+            alert_key = f"{asset_name}_{direction}"
+
+            if sent_alerts.get(alert_key) == today_str:
+                print(f"ℹ️ Segnale {direction} per {asset_name} già notificato oggi ({today_str}). Saltato.")
+                continue
+
             sl = orb_low if is_long else orb_high
             risk = abs(c - sl)
             if risk > 0:
@@ -159,6 +179,9 @@ for asset_name, config in ASSETS.items():
                         f"📊 *Orario:* {session_bars.index[-1].strftime('%H:%M')} EST | RSI: `{rsi:.1f}`"
                     )
                     send_telegram(msg)
+                    sent_alerts[alert_key] = today_str
+                    with open(CACHE_FILE, "w") as f:
+                        json.dump(sent_alerts, f)
 
     # --- STRATEGIA 2: CRYPTO DONCHIAN 20G REALE + CROSSOVER ---
     elif strat_type == "CRYPTO_TRAILING":
@@ -180,11 +203,17 @@ for asset_name, config in ASSETS.items():
         d_high, d_low = float(bar['Donchian_H']), float(bar['Donchian_L'])
         prev_d_high, prev_d_low = float(prev_bar['Donchian_H']), float(prev_bar['Donchian_L'])
 
-        # Crossover giornaliero: scatta SOLO al momento del breakout reale
         is_long = (c > d_high) and (prev_c <= prev_d_high) and (c > ema)
         is_short = (c < d_low) and (prev_c >= prev_d_low) and (c < ema)
 
         if is_long or is_short:
+            direction = "LONG" if is_long else "SHORT"
+            alert_key = f"{asset_name}_{direction}"
+
+            if sent_alerts.get(alert_key) == today_str:
+                print(f"ℹ️ Segnale {direction} per {asset_name} già notificato oggi ({today_str}). Saltato.")
+                continue
+
             trail_sl = float(bar['Trailing_SL_L']) if is_long else float(bar['Trailing_SL_H'])
             sl_pct = (abs(c - trail_sl) / c) * 100
             azione = "COMPRA (Long) 📈" if is_long else "VENDI (Short) 📉"
@@ -196,6 +225,10 @@ for asset_name, config in ASSETS.items():
                 f"🛡️ *Trailing Stop Dinamico (10g):* `{trail_sl:.2f}` (-{sl_pct:.2f}%)\n\n"
                 f"ℹ️ *Gestione Exit:* Mantieni la posizione finché il prezzo non infrange il Trailing Stop a 10 giorni."
             )
+            
             send_telegram(msg)
+            sent_alerts[alert_key] = today_str
+            with open(CACHE_FILE, "w") as f:
+                json.dump(sent_alerts, f)
 
 print("Scansione completata.")
