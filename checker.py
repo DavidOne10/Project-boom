@@ -1,28 +1,29 @@
 import os
 import sys
+import json
 import requests
 import pandas as pd
 import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
-from alpaca.data.enums import DataFeed
-from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-from datetime import datetime
 from zoneinfo import ZoneInfo
 
-# Importazione Alpaca SDK per Mercati US (Zero HTTP 429 Rate Limits)
-try:
-    from alpaca.data.historical import StockHistoricalDataClient
-    from alpaca.data.requests import StockBarsRequest
-    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-    ALPACA_KEY = os.environ.get("ALPACA_API_KEY")
-    ALPACA_SECRET = os.environ.get("ALPACA_SECRET_KEY")
-    alpaca_client = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET) if ALPACA_KEY and ALPACA_SECRET else None
-except Exception:
-    alpaca_client = None
-
+# --- 1. CONFIGURAZIONE CREDENZIALI & TELEGRAM ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID")
+
+# --- 2. CACHE ANTI-SPAM TELEGRAM ---
+CACHE_FILE = "sent_alerts.json"
+sent_alerts = {}
+if os.path.exists(CACHE_FILE):
+    try:
+        with open(CACHE_FILE, "r") as f:
+            sent_alerts = json.load(f)
+    except Exception:
+        sent_alerts = {}
+
+now_rome = datetime.now(ZoneInfo("Europe/Rome"))
+today_str = now_rome.strftime("%Y-%m-%d")
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -43,63 +44,95 @@ if len(sys.argv) > 1 and sys.argv[1] == "--test":
     send_telegram("🧪 *TEST CHECKER — TELEGRAM OPERATIVO*")
     sys.exit(0)
 
+# Importazione Alpaca SDK per Mercati US
+try:
+    from alpaca.data.historical import StockHistoricalDataClient
+    from alpaca.data.requests import StockBarsRequest
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+    from alpaca.data.enums import DataFeed
+    ALPACA_KEY = os.environ.get("ALPACA_API_KEY") or os.environ.get("API_KEY")
+    ALPACA_SECRET = os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("SECRET_KEY")
+    alpaca_client = StockHistoricalDataClient(ALPACA_KEY, ALPACA_SECRET) if ALPACA_KEY and ALPACA_SECRET else None
+except Exception:
+    alpaca_client = None
+
 # ==========================================
-# 1. SCANSIONE CRYPTO 24/7 (Protezione Anti-429 Yahoo)
+# 3. SCANSIONE CRYPTO 24/7 (15M Crossover + Donchian 20G + Trailing SL)
 # ==========================================
 def check_crypto():
-    now_rome = datetime.now(ZoneInfo("Europe/Rome"))
     print(f"\n🪙 [{now_rome.strftime('%H:%M CEST')}] Avvio scansione Crypto 24/7...")
     crypto_symbols = {"BTC-USD": "Bitcoin ₿", "ETH-USD": "Ethereum 🔷"}
 
     for ticker, name in crypto_symbols.items():
         try:
-            df = yf.download(ticker, period="4mo", interval="1d", progress=False, auto_adjust=True)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
+            # 1. Livelli giornalieri (Donchian 20G, EMA50, Trailing SL 10G)
+            df_daily = yf.download(ticker, period="6mo", interval="1d", progress=False, auto_adjust=True)
+            if isinstance(df_daily.columns, pd.MultiIndex):
+                df_daily.columns = df_daily.columns.get_level_values(0)
 
-            if df.empty or len(df) < 25:
-                print(f"⚠️ Dati non disponibili per {name}")
+            if df_daily.empty or len(df_daily) < 25:
+                print(f"⚠️ Dati giornalieri non disponibili per {name}")
                 continue
 
-            df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
-            df['High_20'] = df['High'].shift(1).rolling(20).max()
-            df['Low_20'] = df['Low'].shift(1).rolling(20).min()
+            df_daily['EMA_50'] = df_daily['Close'].ewm(span=50, adjust=False).mean()
+            df_daily['Donchian_H'] = df_daily['High'].shift(1).rolling(20).max()
+            df_daily['Donchian_L'] = df_daily['Low'].shift(1).rolling(20).min()
+            df_daily['Trailing_SL_L'] = df_daily['Low'].shift(1).rolling(10).min()
+            df_daily['Trailing_SL_H'] = df_daily['High'].shift(1).rolling(10).max()
 
-            bar = df.iloc[-1]
-            prev_bar = df.iloc[-2]
+            last_daily = df_daily.iloc[-1]
+            ema = float(last_daily['EMA_50'])
+            d_high, d_low = float(last_daily['Donchian_H']), float(last_daily['Donchian_L'])
 
-            c = float(bar['Close'])
-            prev_c = float(prev_bar['Close'])
-            ema = float(bar['EMA_50'])
-            h20, l20 = float(bar['High_20']), float(bar['Low_20'])
-            prev_h20, prev_l20 = float(prev_bar['High_20']), float(prev_bar['Low_20'])
+            # 2. Controllo incrocio su candela 15m
+            df_intra = yf.download(ticker, period="5d", interval="15m", progress=False, auto_adjust=True)
+            if isinstance(df_intra.columns, pd.MultiIndex):
+                df_intra.columns = df_intra.columns.get_level_values(0)
 
-            is_long = (c > h20) and (prev_c <= prev_h20) and (c > ema)
-            is_short = (c < l20) and (prev_c >= prev_l20) and (c < ema)
+            if df_intra.empty or len(df_intra) < 2:
+                print(f"⚠️ Dati intraday 15m non disponibili per {name}")
+                continue
 
-            print(f"📊 {name}: Prezzo {c:,.2f} | EMA50: {ema:,.2f} | High20: {h20:,.2f} | Low20: {l20:,.2f}")
+            c = float(df_intra['Close'].iloc[-1])       # Prezzo 15m attuale
+            prev_c = float(df_intra['Close'].iloc[-2])  # Prezzo 15m precedente
+
+            is_long = (c > d_high) and (prev_c <= d_high) and (c > ema)
+            is_short = (c < d_low) and (prev_c >= d_low) and (c < ema)
+
+            print(f"📊 {name}: Prezzo {c:,.2f} | EMA50: {ema:,.2f} | Donchian H20: {d_high:,.2f} | Donchian L20: {d_low:,.2f}")
 
             if is_long or is_short:
+                direction = "LONG" if is_long else "SHORT"
+                alert_key = f"{ticker}_{direction}"
+
+                if sent_alerts.get(alert_key) == today_str:
+                    print(f"ℹ️ Segnale {direction} per {name} già inviato oggi. Saltato.")
+                    continue
+
                 azione = "COMPRA (Long) 📈" if is_long else "VENDI (Short) 📉"
-                soglia = h20 if is_long else l20
+                trail_sl = float(last_daily['Trailing_SL_L']) if is_long else float(last_daily['Trailing_SL_H'])
+                sl_pct = (abs(c - trail_sl) / c) * 100
 
                 msg = (
-                    f"🚨 *SEGNALE CRYPTO — BREAKOUT 20G*\n\n"
-                    f"🪙 *Asset:* {name}\n"
+                    f"🚨 *SEGNALE CRYPTO TREND — {name}*\n\n"
                     f"🎯 *Azione:* {azione}\n"
                     f"📌 *Prezzo Attuale:* `${c:,.2f}`\n"
-                    f"📐 *Livello Breakout (20g):* `${soglia:,.2f}`\n"
-                    f"📊 *Filtro EMA50:* `${ema:,.2f}`\n"
+                    f"🛡️ *Trailing Stop Dinamico (10g):* `${trail_sl:,.2f}` (-{sl_pct:.2f}%)\n\n"
+                    f"ℹ️ *Exit:* Mantieni finché il prezzo non infrange il Trailing Stop a 10 giorni."
                 )
                 send_telegram(msg)
+                
+                sent_alerts[alert_key] = today_str
+                with open(CACHE_FILE, "w") as f:
+                    json.dump(sent_alerts, f)
             else:
-                print(f"⚖️ {name}: Nessun breakout confermato.")
+                print(f"⚖️ {name}: Nessun nuovo incrocio sui 15m.")
 
         except Exception as e:
-            print(f"⚠️ Errore temporaneo Yahoo per {name}: {e}. Salto al prossimo asset.")
+            print(f"⚠️ Errore temporaneo per {name}: {e}")
 
 # ==========================================
-# 2. SCANSIONE STOCK US (Alpaca API + Filtri Completi)
+# 4. SCANSIONE STOCK US (Alpaca API ORB 15M)
 # ==========================================
 def check_us_stocks():
     now_ny = datetime.now(ZoneInfo("America/New_York"))
@@ -114,13 +147,11 @@ def check_us_stocks():
         return
 
     if not alpaca_client:
-        print("❌ Alpaca API Keys mancanti. Impossibile eseguire la scansione US.")
+        print("❌ Alpaca API Keys mancanti. Scansione US saltata.")
         return
 
     symbols = ["SPY", "USO", "GLD"]
     print(f"📈 Avvio scansione ORB 15m su {symbols} via Alpaca API...")
-
-    # Data di inizio: 7 giorni fa per garantire storico sufficiente
     start_date = now_ny - timedelta(days=7)
 
     for sym in symbols:
@@ -129,7 +160,7 @@ def check_us_stocks():
                 symbol_or_symbols=sym,
                 timeframe=TimeFrame(15, TimeFrameUnit.Minute),
                 start=start_date,
-                feed=DataFeed.IEX  # Forzatura per account Alpaca gratuito
+                feed=DataFeed.IEX
             )
             bars = alpaca_client.get_stock_bars(request_params)
             df = bars.df
@@ -141,10 +172,9 @@ def check_us_stocks():
                     continue
 
             if df.empty or len(df) < 30:
-                print(f"⚠️ Dati insufficienti ({len(df)} bar) per {sym} su Alpaca.")
+                print(f"⚠️ Dati insufficienti per {sym} su Alpaca.")
                 continue
 
-            # Gestione Timezone EST
             df['date_est'] = df.index.tz_convert("America/New_York")
             today_df = df[df['date_est'].dt.date == now_ny.date()]
 
@@ -152,9 +182,7 @@ def check_us_stocks():
                 print(f"⏳ Nessuna candela per oggi su {sym}.")
                 continue
 
-            # ORB 15m (Candela delle 09:30 EST)
             orb_first_bar = today_df[(today_df['date_est'].dt.hour == 9) & (today_df['date_est'].dt.minute == 30)]
-
             if orb_first_bar.empty:
                 print(f"⏳ Candela di apertura 09:30 non ancora disponibile per {sym}.")
                 continue
@@ -162,7 +190,6 @@ def check_us_stocks():
             orb_high = float(orb_first_bar['high'].iloc[0])
             orb_low = float(orb_first_bar['low'].iloc[0])
 
-            # Indicatori
             df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
             df['SMA50'] = df['close'].rolling(50).mean()
             
@@ -189,6 +216,13 @@ def check_us_stocks():
             print(f"📊 {sym}: Prezzo {c:.2f} | ORB High: {orb_high:.2f} | ORB Low: {orb_low:.2f} | EMA200: {ema200:.2f} | RSI: {rsi:.1f}")
 
             if is_long or is_short:
+                direction = "LONG" if is_long else "SHORT"
+                alert_key = f"{sym}_{direction}"
+
+                if sent_alerts.get(alert_key) == today_str:
+                    print(f"ℹ️ Segnale {direction} per {sym} già inviato oggi. Saltato.")
+                    continue
+
                 azione = "LONG 📈" if is_long else "SHORT 📉"
                 msg = (
                     f"🚨 *SEGNALE US ORB 15M*\n\n"
@@ -200,15 +234,18 @@ def check_us_stocks():
                     f"📈 *RSI(14):* `{rsi:.1f}`\n"
                 )
                 send_telegram(msg)
+
+                sent_alerts[alert_key] = today_str
+                with open(CACHE_FILE, "w") as f:
+                    json.dump(sent_alerts, f)
             else:
                 print(f"⚖️ {sym}: Nessun nuovo breakout prioritario.")
 
         except Exception as e:
             print(f"❌ Errore durante la scansione Alpaca per {sym}: {e}")
 
-
 # ==========================================
-# 3. MAIN EXECUTION
+# 5. MAIN EXECUTION
 # ==========================================
 if __name__ == "__main__":
     check_crypto()
