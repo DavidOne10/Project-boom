@@ -150,7 +150,7 @@ def check_us_stocks():
         print("❌ Alpaca API Keys mancanti. Scansione US saltata.")
         return
 
-    symbols = ["SPY", "USO", "GLD"]
+    symbols = ["NVDA", "USO", "GLD"]
     print(f"📈 Avvio scansione ORB 15m su {symbols} via Alpaca API...")
     start_date = now_ny - timedelta(days=7)
 
