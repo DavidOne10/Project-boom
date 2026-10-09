@@ -208,6 +208,7 @@ def check_us_stocks():
             sma50 = float(bar['SMA50'])
             rsi = float(bar['RSI'])
 
+            # Mantenuto filtro di sicurezza originale
             rsi_valid = 25 <= rsi <= 75
 
             is_long = (c > orb_high) and (prev_c <= orb_high) and (c > ema200) and (c > sma50) and rsi_valid
@@ -224,6 +225,22 @@ def check_us_stocks():
                     continue
 
                 azione = "LONG 📈" if is_long else "SHORT 📉"
+
+                # UNICA AGGIUNTA: Valutazione operativa specifica per USO
+                tag_operativo = ""
+                if sym == "USO":
+                    DIST_THRESHOLD = 1.50
+                    if direction == "SHORT" and rsi < 30.0 and (sma50 - c) >= DIST_THRESHOLD:
+                        tag_operativo = "\n🔄 *Operatività:* **REVERSE** (Entra LONG / Fade)"
+                    elif direction == "LONG" and rsi > 70.0 and (c - sma50) >= DIST_THRESHOLD:
+                        tag_operativo = "\n🔄 *Operatività:* **REVERSE** (Entra SHORT / Fade)"
+                    elif direction == "LONG" and 40.0 <= rsi <= 60.0 and c > sma50 > ema200:
+                        tag_operativo = "\n🎯 *Operatività:* **FOLLOW** (Asseconda il LONG)"
+                    elif direction == "SHORT" and 40.0 <= rsi <= 60.0 and c < sma50 < ema200:
+                        tag_operativo = "\n🎯 *Operatività:* **FOLLOW** (Asseconda lo SHORT)"
+                    else:
+                        tag_operativo = "\n⚠️ *Operatività:* **NEUTRO / NO CLEAR EDGE**"
+
                 msg = (
                     f"🚨 *SEGNALE US ORB 15M*\n\n"
                     f"🇺🇸 *Ticker:* {sym}\n"
@@ -231,7 +248,8 @@ def check_us_stocks():
                     f"📌 *Prezzo Attuale:* `${c:.2f}`\n"
                     f"📐 *Livello ORB:* `${orb_high if is_long else orb_low:.2f}`\n"
                     f"📊 *EMA200:* `${ema200:.2f}` | *SMA50:* `${sma50:.2f}`\n"
-                    f"📈 *RSI(14):* `{rsi:.1f}`\n"
+                    f"📈 *RSI(14):* `{rsi:.1f}`"
+                    f"{tag_operativo}\n"
                 )
                 send_telegram(msg)
 
