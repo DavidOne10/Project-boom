@@ -23,6 +23,9 @@ def execute_scans():
     os.system("python checker.py")
     # 3. Scansione DAX 3x (Strategia Settimanale)
     os.system("python dax_checker.py")
+    # 4. Scansione FTSE MIB / Minifib (15m + Daily)
+    os.system("python mib_checker.py")
+
 
 def precision_loop():
     # Prima esecuzione immediata all'avvio
