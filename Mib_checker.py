@@ -1,23 +1,17 @@
 import os
+import json
 import requests
 import yfinance as yf
 import pandas as pd
-from flask import Flask, jsonify
 from datetime import datetime
 import pytz
 
-app = Flask(__name__)
-
-# Configurazioni Telegram e Fuso Orario
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 TIMEZONE = pytz.timezone("Europe/Rome")
-
-# Memoria di stato per evitare alert duplicati sullo stesso segnale
-last_sent_signal = None
+STATE_FILE = "mib_state.json"
 
 def send_telegram(message):
-    """Invia l'alert formattato al bot Telegram."""
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("Credenziali Telegram mancanti.")
         return
@@ -28,45 +22,59 @@ def send_telegram(message):
     except Exception as e:
         print(f"Errore nell'invio Telegram: {e}")
 
-@app.route("/")
-def home():
-    return "FTSE MIB / Minifib Checker (15m + Daily) attivo e operativo!", 200
+def get_last_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                data = json.load(f)
+                return data.get("signal")
+        except:
+            pass
+    return None
 
-@app.route("/check-mib", methods=["GET"])
-def check_mib():
-    global last_sent_signal
-    
+def save_state(signal):
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump({"signal": signal, "updated_at": datetime.now(TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}, f)
+    except Exception as e:
+        print(f"Errore salvataggio stato MIB: {e}")
+
+def run_mib_check():
     # 1. Filtro orario: Borsa Italiana aperta (Lun-Ven, 09:00 - 17:30)
     now = datetime.now(TIMEZONE)
     if now.weekday() >= 5: 
-        return jsonify({"status": "mercato chiuso (weekend)"}), 200
+        print("MIB: Mercato chiuso (weekend).")
+        return
         
     market_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
     market_close = now.replace(hour=17, minute=30, second=0, microsecond=0)
     
     if not (market_open <= now <= market_close):
-        return jsonify({"status": "fuori orario di borsa"}), 200
+        print("MIB: Fuori orario di borsa.")
+        return
 
     try:
+        print("Analisi FTSE MIB / Minifib in corso...")
         ticker = yf.Ticker("^FTSEMIB")
         
-        # 2. Download dati a 15 minuti (per la strategia) e Daily (per i confini)
+        # Download dati 15m e Daily
         df_15m = ticker.history(period="5d", interval="15m")
         df_daily = ticker.history(period="5d", interval="1d")
         
         if df_15m.empty or df_daily.empty or len(df_15m) < 40:
-            return jsonify({"status": "dati insufficienti"}), 400
+            print("MIB: Dati insufficienti.")
+            return
 
-        # Estraiamo i livelli chiave della seduta Daily precedente
+        # Livelli Daily della seduta precedente (per ancorare i target)
         yesterday = df_daily.iloc[-2]
         y_high = yesterday['High']
         y_low = yesterday['Low']
         y_range = y_high - y_low
 
-        # Lavoriamo rigorosamente sulla candela a 15m appena CHIUSA
+        # Candela a 15m appena CHIUSA
         df_closed = df_15m.iloc[:-1].copy()
 
-        # 3. Calcolo Indicatori Tecnici (EMA 9/21, RSI 14, ATR 14)
+        # Indicatori Tecnici
         df_closed['EMA_9'] = df_closed['Close'].ewm(span=9, adjust=False).mean()
         df_closed['EMA_21'] = df_closed['Close'].ewm(span=21, adjust=False).mean()
         
@@ -92,21 +100,23 @@ def check_mib():
         rsi_val = last['RSI']
         atr_val = last['ATR']
         
-        # 4. Logica di Ingresso: Crossover EMA + Filtro RSI + Target Ibrido (ATR + Daily)
+        # Logica di Ingresso: Crossover + Filtro RSI + Target ibrido (ATR + Daily)
         signal = None
         if prev['EMA_9'] <= prev['EMA_21'] and last['EMA_9'] > last['EMA_21'] and rsi_val > 50:
             signal = "LONG"
             stop_loss = current_price - (1.2 * atr_val)
-            take_profit = min(current_price + (3.0 * atr_val), y_high) # Limitato al massimo di ieri
+            take_profit = min(current_price + (3.0 * atr_val), y_high)
             
         elif prev['EMA_9'] >= prev['EMA_21'] and last['EMA_9'] < last['EMA_21'] and rsi_val < 50:
             signal = "SHORT"
             stop_loss = current_price + (1.2 * atr_val)
-            take_profit = max(current_price - (3.0 * atr_val), y_low) # Limitato al minimo di ieri
+            take_profit = max(current_price - (3.0 * atr_val), y_low)
             
-        # 5. Controllo Anti-Spam e Invio Notifica Telegram
+        last_sent_signal = get_last_state()
+        
+        # Invio notifica solo in caso di cambio effettivo di stato
         if signal and signal != last_sent_signal:
-            last_sent_signal = signal
+            save_state(signal)
             emoji = "🟢" if signal == "LONG" else "🔴"
             
             message = (
@@ -122,14 +132,12 @@ def check_mib():
                 f"• Orario candela: `{timestamp_candela}`"
             )
             send_telegram(message)
-            return jsonify({"status": f"segnale inviato: {signal}"}), 200
+            print(f"Segnale MIB inviato: {signal}")
         else:
-            return jsonify({"status": "nessun nuovo segnale valido", "ultimo_segnale": last_sent_signal}), 200
+            print(f"MIB: Nessun nuovo segnale (Ultimo stato: {last_sent_signal})")
 
     except Exception as e:
-        print(f"Errore di elaborazione: {e}")
-        return jsonify({"status": "errore", "details": str(e)}), 500
+        print(f"Errore esecuzione mib_checker: {e}")
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    run_mib_check()
