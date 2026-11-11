@@ -55,18 +55,15 @@ def run_mib_check():
     try:
         print("Analisi FTSE MIB / Minifib in corso (via Yahoo .MI)...")
         
-        # Sessione HTTP con User-Agent (la stessa identica che fa funzionare il DAX)
         session = requests.Session()
         session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         })
         
-        # Tentativo con FTSEMIB.MI
         ticker = yf.Ticker("FTSEMIB.MI", session=session)
         df_15m = ticker.history(period="5d", interval="15m")
         df_daily = ticker.history(period="5d", interval="1d")
         
-        # Se serve, fallback sull'ETF MIB principale (EXXT.MI)
         if df_15m.empty or len(df_15m) < 40:
             ticker = yf.Ticker("EXXT.MI", session=session)
             df_15m = ticker.history(period="5d", interval="15m")
@@ -121,16 +118,27 @@ def run_mib_check():
         rsi_val = last['RSI']
         atr_val = last['ATR']
         
+        # Calcoliamo comunque i livelli teorici per mostrarli/monitorarli
+        sl_long = current_price - (1.2 * atr_val)
+        tp_long = min(current_price + (3.0 * atr_val), y_high)
+        
+        sl_short = current_price + (1.2 * atr_val)
+        tp_short = max(current_price - (3.0 * atr_val), y_low)
+
+        # Stampiamo sempre nei log i valori correnti per il confronto in tempo reale
+        print(f"📊 MIB Spot: {current_price:.2f} | EMA9: {last['EMA_9']:.2f} | EMA21: {last['EMA_21']:.2f} | RSI: {rsi_val:.1f}")
+        print(f"🎯 Livelli in attesa -> LONG [SL: {sl_long:.2f} | TP: {tp_long:.2f}] | SHORT [SL: {sl_short:.2f} | TP: {tp_short:.2f}]")
+
         signal = None
         if prev['EMA_9'] <= prev['EMA_21'] and last['EMA_9'] > last['EMA_21'] and rsi_val > 50:
             signal = "LONG"
-            stop_loss = current_price - (1.2 * atr_val)
-            take_profit = min(current_price + (3.0 * atr_val), y_high)
+            stop_loss = sl_long
+            take_profit = tp_long
             
         elif prev['EMA_9'] >= prev['EMA_21'] and last['EMA_9'] < last['EMA_21'] and rsi_val < 50:
             signal = "SHORT"
-            stop_loss = current_price + (1.2 * atr_val)
-            take_profit = max(current_price - (3.0 * atr_val), y_low)
+            stop_loss = sl_short
+            take_profit = tp_short
             
         last_sent_signal = get_last_state()
         
@@ -153,7 +161,7 @@ def run_mib_check():
             send_telegram(message)
             print(f"Segnale MIB inviato: {signal}")
         else:
-            print(f"MIB: Nessun nuovo segnale (Ultimo stato: {last_sent_signal})")
+            print(f"MIB: Nessun nuovo segnale di cross (Ultimo stato registrato: {last_sent_signal})")
 
     except Exception as e:
         print(f"❌ Errore esecuzione mib_checker: {e}")
