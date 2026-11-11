@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import requests
 import time
 import pandas as pd
@@ -16,9 +17,10 @@ if len(sys.argv) == 1 and not (is_weekday and is_working_hours):
     print(f"🌙 Fuori orario/weekend Europa ({now_rome.strftime('%a %H:%M %Z')}). Scansione saltata.")
     sys.exit(0)
 
-# --- 2. CREDENZIALI TELEGRAM ---
+# --- 2. CREDENZIALI TELEGRAM E GESTIONE STATO ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID")
+STATE_FILE = "dax_state.json"
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -34,6 +36,23 @@ def send_telegram(message):
             print(f"❌ Errore Telegram: {res.text}")
     except Exception as e:
         print(f"❌ Errore connessione Telegram: {e}")
+
+def get_last_sent_date():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                data = json.load(f)
+                return data.get("last_date")
+        except:
+            pass
+    return None
+
+def save_sent_date(date_str):
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump({"last_date": date_str, "updated_at": datetime.now(now_rome.tzinfo).strftime('%Y-%m-%d %H:%M:%S')}, f)
+    except Exception as e:
+        print(f"❌ Errore salvataggio stato DAX: {e}")
 
 if len(sys.argv) > 1 and sys.argv[1] == "--test":
     send_telegram("🧪 *TEST DAX 3X CHECKER — TELEGRAM OPERATIVO*")
@@ -53,12 +72,18 @@ TP_PCT_SPOT = TP_PCT_3X / LEVERAGE  # +5.00%
 print(f"🔍 Avvio controllo DAX 3X ({now_rome.strftime('%H:%M CEST')})...")
 
 try:
-    df = yf.download("^GDAXI", period="4mo", interval="1d", progress=False, auto_adjust=True)
+    # Sessione HTTP con User-Agent per evitare il blocco 401 di Yahoo Finance
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    })
+
+    df = yf.download("^GDAXI", period="4mo", interval="1d", progress=False, auto_adjust=True, session=session)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
     if df.empty or len(df) < 25:
-        print("⚠️ Dati DAX non disponibili.")
+        print("⚠️ Dati DAX non disponibili o blocco Yahoo Finance.")
         sys.exit(0)
 
     df.index = pd.to_datetime(df.index)
@@ -69,7 +94,7 @@ try:
     if last_date_str != today_str and now_rome.hour >= 9:
         time.sleep(1)
         try:
-            df_intra = yf.download("^GDAXI", period="1d", interval="5m", progress=False, auto_adjust=True)
+            df_intra = yf.download("^GDAXI", period="1d", interval="5m", progress=False, auto_adjust=True, session=session)
             if isinstance(df_intra.columns, pd.MultiIndex):
                 df_intra.columns = df_intra.columns.get_level_values(0)
                 
@@ -107,22 +132,28 @@ try:
 
     print(f"📊 DAX Spot: {c:.2f} | EMA50: {ema50:.2f} | Max 20g (Close): {h20:.2f}")
 
-    # --- 5. NOTIFICA TELEGRAM ---
+    # --- 5. NOTIFICA TELEGRAM (CON CONTROLLO ANTI-DUPLICATO GIORNALIERO) ---
+    last_sent_date = get_last_sent_date()
+
     if signal_today:
-        msg = (
-            f"🚨 *SEGNALE STRATEGIA DAX 3X (EOD)*\n\n"
-            f"📅 *Data Segnale:* `{today_str}`\n"
-            f"📈 *Chiusura Spot DAX:* `{c:,.2f}`\n"
-            f"📊 *Filtro EMA50:* `{ema50:,.2f}` | *Max 20g:* `{h20:,.2f}`\n\n"
-            f"🟢 *AZIONE DOMANI:* Comprare in APERTURA (09:00)\n\n"
-            f"🎯 *TARGET SPOT DAX (+5.00%):* `{tp_price_spot:,.2f}`\n"
-            f"   └─ _(Corrisponde a +15.0% sul Certificate 3X)_\n"
-            f"🛡️ *STOP LOSS SPOT DAX (-1.67%):* `{sl_price_spot:,.2f}`\n"
-            f"   └─ _(Corrisponde a -5.0% sul Certificate 3X)_\n"
-            f"⏱️ *Time Stop Max:* `{MAX_DAYS} Sessioni`"
-        )
-        send_telegram(msg)
-        print("✅ Alert DAX inviato con successo!")
+        if last_sent_date == today_str:
+            print(f"🔕 DAX: Segnale per la data {today_str} già inviato in precedenza. Nessun nuovo alert.")
+        else:
+            msg = (
+                f"🚨 *SEGNALE STRATEGIA DAX 3X (EOD)*\n\n"
+                f"📅 *Data Segnale:* `{today_str}`\n"
+                f"📈 *Chiusura Spot DAX:* `{c:,.2f}`\n"
+                f"📊 *Filtro EMA50:* `{ema50:,.2f}` | *Max 20g:* `{h20:,.2f}`\n\n"
+                f"🟢 *AZIONE DOMANI:* Comprare in APERTURA (09:00)\n\n"
+                f"🎯 *TARGET SPOT DAX (+5.00%):* `{tp_price_spot:,.2f}`\n"
+                f"   └─ _(Corrisponde a +15.0% sul Certificate 3X)_\n"
+                f"🛡️ *STOP LOSS SPOT DAX (-1.67%):* `{sl_price_spot:,.2f}`\n"
+                f"   └─ _(Corrisponde a -5.0% sul Certificate 3X)_\n"
+                f"⏱️ *Time Stop Max:* `{MAX_DAYS} Sessioni`"
+            )
+            send_telegram(msg)
+            save_sent_date(today_str)
+            print("✅ Alert DAX inviato e stato salvato con successo!")
     else:
         print("⚖️ DAX: Nessun nuovo breakout confermato.")
 
