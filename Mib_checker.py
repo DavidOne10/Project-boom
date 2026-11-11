@@ -4,6 +4,7 @@ import requests
 import pandas as pd
 from datetime import datetime
 import pytz
+import yfinance as yf
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -38,47 +39,6 @@ def save_state(signal):
     except Exception as e:
         print(f"Errore salvataggio stato MIB: {e}")
 
-import io
-
-def fetch_stooq_data(symbol="mib", interval="15m"):
-    """Scarica i dati da Stooq usando requests con timeout e User-Agent."""
-    if interval == "15m":
-        url = f"https://stooq.com/q/d/l/?s={symbol}&i=15m"
-    else:
-        url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
-        
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-    }
-    
-    try:
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200 or not response.text.strip():
-            print(f"⚠️ Stooq ha risposto con status {response.status_code}")
-            return pd.DataFrame()
-            
-        df = pd.read_csv(io.StringIO(response.text))
-        if df.empty or 'Close' not in df.columns:
-            return pd.DataFrame()
-            
-        if 'Time' in df.columns:
-            df['Date'] = pd.to_datetime(df['Date'] + ' ' + df['Time'], errors='coerce')
-        else:
-            df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-            
-        df = df.dropna(subset=['Date'])
-        df.set_index('Date', inplace=True)
-        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-                
-        return df.dropna()
-    except Exception as e:
-        print(f"❌ Errore download Stooq ({symbol}): {e}")
-        return pd.DataFrame()
-
-        
-
 def run_mib_check():
     now = datetime.now(TIMEZONE)
     if now.weekday() >= 5: 
@@ -93,19 +53,43 @@ def run_mib_check():
         return
 
     try:
-        print("Analisi FTSE MIB / Minifib in corso (via Stooq)...")
+        print("Analisi FTSE MIB / Minifib in corso (via Yahoo .MI)...")
         
-        df_15m = fetch_stooq_data("mib", interval="15m")
-        df_daily = fetch_stooq_data("mib", interval="d")
+        # Sessione HTTP con User-Agent (la stessa identica che fa funzionare il DAX)
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        })
         
+        # Tentativo con FTSEMIB.MI
+        ticker = yf.Ticker("FTSEMIB.MI", session=session)
+        df_15m = ticker.history(period="5d", interval="15m")
+        df_daily = ticker.history(period="5d", interval="1d")
+        
+        # Se serve, fallback sull'ETF MIB principale (EXXT.MI)
+        if df_15m.empty or len(df_15m) < 40:
+            ticker = yf.Ticker("EXXT.MI", session=session)
+            df_15m = ticker.history(period="5d", interval="15m")
+            df_daily = ticker.history(period="5d", interval="1d")
+
+        if isinstance(df_15m.columns, pd.MultiIndex):
+            df_15m.columns = df_15m.columns.get_level_values(0)
+        if isinstance(df_daily.columns, pd.MultiIndex):
+            df_daily.columns = df_daily.columns.get_level_values(0)
+
         if df_15m.empty or df_daily.empty or len(df_15m) < 40:
-            print("MIB: Dati insufficienti da Stooq.")
+            print("MIB: Dati insufficienti da Yahoo (.MI).")
             return
 
         if df_15m.index.tz is None:
             df_15m.index = df_15m.index.tz_localize("UTC").tz_convert(TIMEZONE)
+        else:
+            df_15m.index = df_15m.index.tz_convert(TIMEZONE)
+
         if df_daily.index.tz is None:
             df_daily.index = df_daily.index.tz_localize("UTC").tz_convert(TIMEZONE)
+        else:
+            df_daily.index = df_daily.index.tz_convert(TIMEZONE)
 
         yesterday = df_daily.iloc[-2]
         y_high = yesterday['High']
@@ -172,7 +156,7 @@ def run_mib_check():
             print(f"MIB: Nessun nuovo segnale (Ultimo stato: {last_sent_signal})")
 
     except Exception as e:
-        print(f"Errore esecuzione mib_checker: {e}")
+        print(f"❌ Errore esecuzione mib_checker: {e}")
 
 if __name__ == "__main__":
     run_mib_check()
