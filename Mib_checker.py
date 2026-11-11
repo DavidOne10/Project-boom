@@ -38,11 +38,15 @@ def save_state(signal):
     except Exception as e:
         print(f"Errore salvataggio stato MIB: {e}")
 
-def fetch_yahoo_chart_data(symbol, interval="15m", range_period="5d", session=None):
-    """Scarica i dati da Yahoo Finance API v8 (senza il blocco 401 Crumb)."""
-    if session is None:
-        session = requests.Session()
+def fetch_yahoo_direct(symbol, interval="15m", range_period="5d"):
+    """Scarica i dati direttamente dall'API v8 di Yahoo senza passare per yfinance."""
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_period}&interval={interval}"
+    
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    })
+    
     res = session.get(url, timeout=15)
     data = res.json()
     
@@ -75,17 +79,11 @@ def run_mib_check():
         return
 
     try:
-        print("Analisi FTSE MIB / Minifib in corso...")
+        print("Analisi FTSE MIB / Minifib in corso (API diretta)...")
         
-        # Sessione HTTP con User-Agent per mascherare il bot
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        })
-        
-        # Download sicuro via API v8 Chart (senza crumb 401)
-        df_15m = fetch_yahoo_chart_data("^FTSEMIB", interval="15m", range_period="5d", session=session)
-        df_daily = fetch_yahoo_chart_data("^FTSEMIB", interval="1d", range_period="5d", session=session)
+        # Download dati 15m e Daily senza yfinance
+        df_15m = fetch_yahoo_direct("^FTSEMIB", interval="15m", range_period="5d")
+        df_daily = fetch_yahoo_direct("^FTSEMIB", interval="1d", range_period="5d")
         
         if df_15m.empty or df_daily.empty or len(df_15m) < 40:
             print("MIB: Dati insufficienti.")
