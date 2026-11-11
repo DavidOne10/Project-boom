@@ -55,7 +55,14 @@ def run_mib_check():
 
     try:
         print("Analisi FTSE MIB / Minifib in corso...")
-        ticker = yf.Ticker("^FTSEMIB")
+        
+        # Sessione HTTP con User-Agent per evitare il blocco 401 di Yahoo Finance
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        })
+        
+        ticker = yf.Ticker("^FTSEMIB", session=session)
         
         # Download dati 15m e Daily
         df_15m = ticker.history(period="5d", interval="15m")
