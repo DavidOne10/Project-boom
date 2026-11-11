@@ -1,7 +1,6 @@
 import os
 import json
 import requests
-import yfinance as yf
 import pandas as pd
 from datetime import datetime
 import pytz
@@ -39,6 +38,28 @@ def save_state(signal):
     except Exception as e:
         print(f"Errore salvataggio stato MIB: {e}")
 
+def fetch_yahoo_chart_data(symbol, interval="15m", range_period="5d", session=None):
+    """Scarica i dati da Yahoo Finance API v8 (senza il blocco 401 Crumb)."""
+    if session is None:
+        session = requests.Session()
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range={range_period}&interval={interval}"
+    res = session.get(url, timeout=15)
+    data = res.json()
+    
+    result = data["chart"]["result"][0]
+    timestamps = result["timestamp"]
+    indicators = result["indicators"]["quote"][0]
+    
+    df = pd.DataFrame({
+        "Open": indicators["open"],
+        "High": indicators["high"],
+        "Low": indicators["low"],
+        "Close": indicators["close"],
+        "Volume": indicators.get("volume", [0]*len(timestamps))
+    }, index=pd.to_datetime(timestamps, unit="s", utc=True).tz_convert("Europe/Rome"))
+    
+    return df.dropna()
+
 def run_mib_check():
     # 1. Filtro orario: Borsa Italiana aperta (Lun-Ven, 09:00 - 17:30)
     now = datetime.now(TIMEZONE)
@@ -56,17 +77,15 @@ def run_mib_check():
     try:
         print("Analisi FTSE MIB / Minifib in corso...")
         
-        # Sessione HTTP con User-Agent per evitare il blocco 401 di Yahoo Finance
+        # Sessione HTTP con User-Agent per mascherare il bot
         session = requests.Session()
         session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         })
         
-        ticker = yf.Ticker("^FTSEMIB", session=session)
-        
-        # Download dati 15m e Daily
-        df_15m = ticker.history(period="5d", interval="15m")
-        df_daily = ticker.history(period="5d", interval="1d")
+        # Download sicuro via API v8 Chart (senza crumb 401)
+        df_15m = fetch_yahoo_chart_data("^FTSEMIB", interval="15m", range_period="5d", session=session)
+        df_daily = fetch_yahoo_chart_data("^FTSEMIB", interval="1d", range_period="5d", session=session)
         
         if df_15m.empty or df_daily.empty or len(df_15m) < 40:
             print("MIB: Dati insufficienti.")
