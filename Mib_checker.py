@@ -57,7 +57,6 @@ def fetch_stooq_data(symbol="mib", interval="15m"):
             
         df = df.dropna(subset=['Date'])
         df.set_index('Date', inplace=True)
-        # Conversione numerica per sicurezza
         for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -68,7 +67,6 @@ def fetch_stooq_data(symbol="mib", interval="15m"):
         return pd.DataFrame()
 
 def run_mib_check():
-    # 1. Filtro orario: Borsa Italiana aperta (Lun-Ven, 09:00 - 17:30)
     now = datetime.now(TIMEZONE)
     if now.weekday() >= 5: 
         print("MIB: Mercato chiuso (weekend).")
@@ -84,8 +82,84 @@ def run_mib_check():
     try:
         print("Analisi FTSE MIB / Minifib in corso (via Stooq)...")
         
-        # Download dati 15m e Daily da Stooq
         df_15m = fetch_stooq_data("mib", interval="15m")
         df_daily = fetch_stooq_data("mib", interval="d")
         
+        if df_15m.empty or df_daily.empty or len(df_15m) < 40:
+            print("MIB: Dati insufficienti da Stooq.")
+            return
+
+        if df_15m.index.tz is None:
+            df_15m.index = df_15m.index.tz_localize("UTC").tz_convert(TIMEZONE)
+        if df_daily.index.tz is None:
+            df_daily.index = df_daily.index.tz_localize("UTC").tz_convert(TIMEZONE)
+
+        yesterday = df_daily.iloc[-2]
+        y_high = yesterday['High']
+        y_low = yesterday['Low']
+        y_range = y_high - y_low
+
+        df_closed = df_15m.iloc[:-1].copy()
+
+        df_closed['EMA_9'] = df_closed['Close'].ewm(span=9, adjust=False).mean()
+        df_closed['EMA_21'] = df_closed['Close'].ewm(span=21, adjust=False).mean()
         
+        delta = df_closed['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df_closed['RSI'] = 100 - (100 / (1 + rs))
+        
+        high_low = df_closed['High'] - df_closed['Low']
+        high_close = (df_closed['High'] - df_closed['Close'].shift(1)).abs()
+        low_close = (df_closed['Low'] - df_closed['Close'].shift(1)).abs()
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df_closed['ATR'] = true_range.rolling(window=14).mean()
+        
+        last = df_closed.iloc[-1]
+        prev = df_closed.iloc[-2]
+        
+        current_price = last['Close']
+        timestamp_candela = df_closed.index[-1].strftime('%H:%M - %d/%m/%Y')
+        rsi_val = last['RSI']
+        atr_val = last['ATR']
+        
+        signal = None
+        if prev['EMA_9'] <= prev['EMA_21'] and last['EMA_9'] > last['EMA_21'] and rsi_val > 50:
+            signal = "LONG"
+            stop_loss = current_price - (1.2 * atr_val)
+            take_profit = min(current_price + (3.0 * atr_val), y_high)
+            
+        elif prev['EMA_9'] >= prev['EMA_21'] and last['EMA_9'] < last['EMA_21'] and rsi_val < 50:
+            signal = "SHORT"
+            stop_loss = current_price + (1.2 * atr_val)
+            take_profit = max(current_price - (3.0 * atr_val), y_low)
+            
+        last_sent_signal = get_last_state()
+        
+        if signal and signal != last_sent_signal:
+            save_state(signal)
+            emoji = "🟢" if signal == "LONG" else "🔴"
+            
+            message = (
+                f"🚨 *SEGNALE MINIFIB / MIB (15m)*\n\n"
+                f"• Direzione: {emoji} *{signal}*\n"
+                f"• **Trigger (Ingresso)**: `{current_price:.2f}`\n"
+                f"• **Stop Loss (SL)**: `{stop_loss:.2f}`\n"
+                f"• **Take Profit (TP)**: `{take_profit:.2f}`\n\n"
+                f"📊 *Metriche e Contesto:*\n"
+                f"• EMA 9/21: `{last['EMA_9']:.2f}` / `{last['EMA_21']:.2f}`\n"
+                f"• RSI: `{rsi_val:.1f}` | ATR: `{atr_val:.1f} pt`\n"
+                f"• Range Ieri (Daily): `{y_range:.1f} pt`\n"
+                f"• Orario candela: `{timestamp_candela}`"
+            )
+            send_telegram(message)
+            print(f"Segnale MIB inviato: {signal}")
+        else:
+            print(f"MIB: Nessun nuovo segnale (Ultimo stato: {last_sent_signal})")
+
+    except Exception as e:
+        print(f"Errore esecuzione mib_checker: {e}")
+
+if __name__ == "__main__":
+    run_mib_check()
