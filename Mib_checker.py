@@ -38,15 +38,26 @@ def save_state(signal):
     except Exception as e:
         print(f"Errore salvataggio stato MIB: {e}")
 
+import io
+
 def fetch_stooq_data(symbol="mib", interval="15m"):
-    """Scarica i dati da Stooq in modo pulito via CSV."""
+    """Scarica i dati da Stooq usando requests con timeout e User-Agent."""
     if interval == "15m":
         url = f"https://stooq.com/q/d/l/?s={symbol}&i=15m"
     else:
         url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
         
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    }
+    
     try:
-        df = pd.read_csv(url)
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200 or not response.text.strip():
+            print(f"⚠️ Stooq ha risposto con status {response.status_code}")
+            return pd.DataFrame()
+            
+        df = pd.read_csv(io.StringIO(response.text))
         if df.empty or 'Close' not in df.columns:
             return pd.DataFrame()
             
@@ -63,8 +74,10 @@ def fetch_stooq_data(symbol="mib", interval="15m"):
                 
         return df.dropna()
     except Exception as e:
-        print(f"Errore download Stooq ({symbol}): {e}")
+        print(f"❌ Errore download Stooq ({symbol}): {e}")
         return pd.DataFrame()
+
+        
 
 def run_mib_check():
     now = datetime.now(TIMEZONE)
