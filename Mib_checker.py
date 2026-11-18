@@ -161,28 +161,33 @@ def run_mib_check():
             if signal != last_sent_signal:
                 emoji = "🟢" if signal == "LONG" else "🔴"
                 
-                # Calcolo matematico della soglia di tolleranza (es. 0.3 * ATR)
+                                # Applicazione dell'offset
+                p_operativo = current_price + MIB_OFFSET
+                sl_operativo = stop_loss + MIB_OFFSET
+                tp_operativo = take_profit + MIB_OFFSET
+                
                 tolleranza = 0.3 * atr_val
                 if signal == "LONG":
-                    limite_ingresso = current_price + tolleranza
-                    regola_tolleranza = f"• **Max Ingresso Consentito**: `{limite_ingresso:.2f}` *(oltre è invalidato)*"
+                    limite_ingresso = (current_price + tolleranza) + MIB_OFFSET
+                    regola_tolleranza = f"• **Max Ingresso Consentito**: `{limite_ingresso:.2f}`"
                 else:
-                    limite_ingresso = current_price - tolleranza
-                    regola_tolleranza = f"• **Min Ingresso Consentito**: `{limite_ingresso:.2f}` *(oltre è invalidato)*"
+                    limite_ingresso = (current_price - tolleranza) + MIB_OFFSET
+                    regola_tolleranza = f"• **Min Ingresso Consentito**: `{limite_ingresso:.2f}`"
                 
                 message = (
                     f"🚨 *SEGNALE MINIFIB / MIB (15m)*\n\n"
                     f"• Direzione: {emoji} *{signal}*\n"
-                    f"• **Trigger (Chiusura)**: `{current_price:.2f}`\n"
+                    f"• **Trigger (Ingresso)**: `{p_operativo:.2f}`\n"
                     f"{regola_tolleranza}\n"
-                    f"• **Stop Loss (SL)**: `{stop_loss:.2f}`\n"
-                    f"• **Take Profit (TP)**: `{take_profit:.2f}`\n\n"
+                    f"• **Stop Loss (SL)**: `{sl_operativo:.2f}`\n"
+                    f"• **Take Profit (TP)**: `{tp_operativo:.2f}`\n\n"
                     f"📊 *Metriche e Contesto:*\n"
                     f"• EMA 9/21: `{last['EMA_9']:.2f}` / `{last['EMA_21']:.2f}`\n"
                     f"• RSI: `{rsi_val:.1f}` | ATR: `{atr_val:.1f} pt`\n"
                     f"• Range Ieri (Daily): `{y_range:.1f} pt`\n"
                     f"• Orario candela: `{timestamp_candela}`"
                 )
+
                 
                 send_telegram(message)
                 save_state(signal)
