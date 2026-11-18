@@ -2,7 +2,7 @@ import os
 import json
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 import pytz
 import yfinance as yf
 
@@ -25,9 +25,6 @@ def send_telegram(message):
             print(f"❌ Errore Telegram ({response.status_code}): {response.text}")
     except Exception as e:
         print(f"❌ Eccezione nell'invio Telegram: {e}")
-
-
-from datetime import datetime, date
 
 def get_last_state():
     if os.path.exists(STATE_FILE):
@@ -58,7 +55,6 @@ def save_state(signal):
             }, f)
     except Exception as e:
         print(f"Errore salvataggio stato MIB: {e}")
-
 
 def run_mib_check():
     now = datetime.now(TIMEZONE)
@@ -161,7 +157,8 @@ def run_mib_check():
             stop_loss = sl_short
             take_profit = tp_short
             
-                last_sent_signal = get_last_state()
+        # Spaziatura corretta qui sotto:
+        last_sent_signal = get_last_state()
         
         # Condizione: c'è un segnale E (è diverso dall'ultimo inviato OGGI oppure non c'è ancora uno stato oggi)
         if signal:
@@ -191,7 +188,6 @@ def run_mib_check():
 
     except Exception as e:
         print(f"❌ Errore esecuzione mib_checker: {e}")
-
 
 if __name__ == "__main__":
     run_mib_check()
