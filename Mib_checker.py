@@ -10,6 +10,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 TIMEZONE = pytz.timezone("Europe/Rome")
 STATE_FILE = "mib_state.json"
+MIB_OFFSET = -523
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
