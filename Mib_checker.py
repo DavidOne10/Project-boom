@@ -161,31 +161,37 @@ def run_mib_check():
             stop_loss = sl_short
             take_profit = tp_short
             
-        last_sent_signal = get_last_state()
+                last_sent_signal = get_last_state()
         
-        if signal and signal != last_sent_signal:
-            save_state(signal)
-            emoji = "🟢" if signal == "LONG" else "🔴"
-            
-            message = (
-                f"🚨 *SEGNALE MINIFIB / MIB (15m)*\n\n"
-                f"• Direzione: {emoji} *{signal}*\n"
-                f"• **Trigger (Ingresso)**: `{current_price:.2f}`\n"
-                f"• **Stop Loss (SL)**: `{stop_loss:.2f}`\n"
-                f"• **Take Profit (TP)**: `{take_profit:.2f}`\n\n"
-                f"📊 *Metriche e Contesto:*\n"
-                f"• EMA 9/21: `{last['EMA_9']:.2f}` / `{last['EMA_21']:.2f}`\n"
-                f"• RSI: `{rsi_val:.1f}` | ATR: `{atr_val:.1f} pt`\n"
-                f"• Range Ieri (Daily): `{y_range:.1f} pt`\n"
-                f"• Orario candela: `{timestamp_candela}`"
-            )
-            send_telegram(message)
-            print(f"Segnale MIB inviato: {signal}")
+        # Condizione: c'è un segnale E (è diverso dall'ultimo inviato OGGI oppure non c'è ancora uno stato oggi)
+        if signal:
+            if signal != last_sent_signal:
+                emoji = "🟢" if signal == "LONG" else "🔴"
+                
+                message = (
+                    f"🚨 *SEGNALE MINIFIB / MIB (15m)*\n\n"
+                    f"• Direzione: {emoji} *{signal}*\n"
+                    f"• **Trigger (Ingresso)**: `{current_price:.2f}`\n"
+                    f"• **Stop Loss (SL)**: `{stop_loss:.2f}`\n"
+                    f"• **Take Profit (TP)**: `{take_profit:.2f}`\n\n"
+                    f"📊 *Metriche e Contesto:*\n"
+                    f"• EMA 9/21: `{last['EMA_9']:.2f}` / `{last['EMA_21']:.2f}`\n"
+                    f"• RSI: `{rsi_val:.1f}` | ATR: `{atr_val:.1f} pt`\n"
+                    f"• Range Ieri (Daily): `{y_range:.1f} pt`\n"
+                    f"• Orario candela: `{timestamp_candela}`"
+                )
+                
+                send_telegram(message)
+                save_state(signal)
+                print(f"✅ Segnale MIB {signal} elaborato e inviato correttamente a Telegram!")
+            else:
+                print(f"ℹ️ Segnale {signal} già registrato oggi. Nessun nuovo alert inviato per evitare spam.")
         else:
             print(f"MIB: Nessun nuovo segnale di cross (Ultimo stato registrato: {last_sent_signal})")
 
     except Exception as e:
         print(f"❌ Errore esecuzione mib_checker: {e}")
+
 
 if __name__ == "__main__":
     run_mib_check()
