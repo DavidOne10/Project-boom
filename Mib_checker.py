@@ -33,12 +33,9 @@ def get_last_state():
                 data = json.load(f)
                 saved_date = data.get("date")
                 today_str = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
-                
-                # Se il segnale salvato è di un giorno precedente, azzeriamo lo stato (reset giornaliero!)
                 if saved_date != today_str:
                     print("🔄 Nuovo giorno rilevato: reset dello stato precedente.")
                     return None
-                    
                 return data.get("signal")
         except:
             pass
@@ -135,14 +132,12 @@ def run_mib_check():
         rsi_val = last['RSI']
         atr_val = last['ATR']
         
-        # Calcoliamo comunque i livelli teorici per mostrarli/monitorarli
         sl_long = current_price - (1.2 * atr_val)
         tp_long = min(current_price + (3.0 * atr_val), y_high)
         
         sl_short = current_price + (1.2 * atr_val)
         tp_short = max(current_price - (3.0 * atr_val), y_low)
 
-        # Stampiamo sempre nei log i valori correnti per il confronto in tempo reale
         print(f"📊 MIB Spot: {current_price:.2f} | EMA9: {last['EMA_9']:.2f} | EMA21: {last['EMA_21']:.2f} | RSI: {rsi_val:.1f}")
         print(f"🎯 Livelli in attesa -> LONG [SL: {sl_long:.2f} | TP: {tp_long:.2f}] | SHORT [SL: {sl_short:.2f} | TP: {tp_short:.2f}]")
 
@@ -157,14 +152,11 @@ def run_mib_check():
             stop_loss = sl_short
             take_profit = tp_short
             
-        # Spaziatura corretta qui sotto:
         last_sent_signal = get_last_state()
         
-        # Condizione: c'è un segnale E (è diverso dall'ultimo inviato OGGI oppure non c'è ancora uno stato oggi)
         if signal:
             if signal != last_sent_signal:
                 emoji = "🟢" if signal == "LONG" else "🔴"
-                
                 message = (
                     f"🚨 *SEGNALE MINIFIB / MIB (15m)*\n\n"
                     f"• Direzione: {emoji} *{signal}*\n"
@@ -177,7 +169,6 @@ def run_mib_check():
                     f"• Range Ieri (Daily): `{y_range:.1f} pt`\n"
                     f"• Orario candela: `{timestamp_candela}`"
                 )
-                
                 send_telegram(message)
                 save_state(signal)
                 print(f"✅ Segnale MIB {signal} elaborato e inviato correttamente a Telegram!")
