@@ -132,12 +132,14 @@ def run_mib_check():
         rsi_val = last['RSI']
         atr_val = last['ATR']
         
+        # Calcoliamo i livelli teorici
         sl_long = current_price - (1.2 * atr_val)
         tp_long = min(current_price + (3.0 * atr_val), y_high)
         
         sl_short = current_price + (1.2 * atr_val)
         tp_short = max(current_price - (3.0 * atr_val), y_low)
 
+        # Stampa di monitoraggio live nei log
         print(f"📊 MIB Spot: {current_price:.2f} | EMA9: {last['EMA_9']:.2f} | EMA21: {last['EMA_21']:.2f} | RSI: {rsi_val:.1f}")
         print(f"🎯 Livelli in attesa -> LONG [SL: {sl_long:.2f} | TP: {tp_long:.2f}] | SHORT [SL: {sl_short:.2f} | TP: {tp_short:.2f}]")
 
@@ -157,10 +159,21 @@ def run_mib_check():
         if signal:
             if signal != last_sent_signal:
                 emoji = "🟢" if signal == "LONG" else "🔴"
+                
+                # Calcolo matematico della soglia di tolleranza (es. 0.3 * ATR)
+                tolleranza = 0.3 * atr_val
+                if signal == "LONG":
+                    limite_ingresso = current_price + tolleranza
+                    regola_tolleranza = f"• **Max Ingresso Consentito**: `{limite_ingresso:.2f}` *(oltre è invalidato)*"
+                else:
+                    limite_ingresso = current_price - tolleranza
+                    regola_tolleranza = f"• **Min Ingresso Consentito**: `{limite_ingresso:.2f}` *(oltre è invalidato)*"
+                
                 message = (
                     f"🚨 *SEGNALE MINIFIB / MIB (15m)*\n\n"
                     f"• Direzione: {emoji} *{signal}*\n"
-                    f"• **Trigger (Ingresso)**: `{current_price:.2f}`\n"
+                    f"• **Trigger (Chiusura)**: `{current_price:.2f}`\n"
+                    f"{regola_tolleranza}\n"
                     f"• **Stop Loss (SL)**: `{stop_loss:.2f}`\n"
                     f"• **Take Profit (TP)**: `{take_profit:.2f}`\n\n"
                     f"📊 *Metriche e Contesto:*\n"
@@ -169,11 +182,12 @@ def run_mib_check():
                     f"• Range Ieri (Daily): `{y_range:.1f} pt`\n"
                     f"• Orario candela: `{timestamp_candela}`"
                 )
+                
                 send_telegram(message)
                 save_state(signal)
-                print(f"✅ Segnale MIB {signal} elaborato e inviato correttamente a Telegram!")
+                print(f"✅ Segnale MIB {signal} elaborato con soglia matematica e inviato!")
             else:
-                print(f"ℹ️ Segnale {signal} già registrato oggi. Nessun nuovo alert inviato per evitare spam.")
+                print(f"ℹ️ Segnale {signal} già registrato oggi. Nessun nuovo alert.")
         else:
             print(f"MIB: Nessun nuovo segnale di cross (Ultimo stato registrato: {last_sent_signal})")
 
