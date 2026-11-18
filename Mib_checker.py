@@ -18,9 +18,14 @@ def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}
     try:
-        requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            print("✅ Messaggio Telegram inviato con successo!")
+        else:
+            print(f"❌ Errore Telegram ({response.status_code}): {response.text}")
     except Exception as e:
-        print(f"Errore nell'invio Telegram: {e}")
+        print(f"❌ Eccezione nell'invio Telegram: {e}")
+
 
 from datetime import datetime, date
 
