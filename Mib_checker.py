@@ -10,7 +10,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 TIMEZONE = pytz.timezone("Europe/Rome")
 STATE_FILE = "mib_state.json"
-MIB_OFFSET = -523
+MIB_OFFSET = -523  # Differenza fissa per Plus500
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
@@ -133,18 +133,24 @@ def run_mib_check():
         rsi_val = last['RSI']
         atr_val = last['ATR']
         
-        # Calcoliamo i livelli teorici
+        # Calcoliamo i livelli teorici di base
         sl_long = current_price - (1.2 * atr_val)
         tp_long = min(current_price + (3.0 * atr_val), y_high)
         
         sl_short = current_price + (1.2 * atr_val)
         tp_short = max(current_price - (3.0 * atr_val), y_low)
 
-        # Stampa di monitoraggio live nei log
+        # Stampa di monitoraggio live nei log di Render
         print(f"📊 MIB Spot: {current_price:.2f} | EMA9: {last['EMA_9']:.2f} | EMA21: {last['EMA_21']:.2f} | RSI: {rsi_val:.1f}")
         print(f"🎯 Livelli in attesa -> LONG [SL: {sl_long:.2f} | TP: {tp_long:.2f}] | SHORT [SL: {sl_short:.2f} | TP: {tp_short:.2f}]")
 
+        # --- ANALISI SEGNALI (Incrocio + Trend Following Avanzato con Pullback e Slope) ---
         signal = None
+        tipo_segnale = "INCROCIO"
+        
+        ema9_slope = last['EMA_9'] - df_closed.iloc[-2]['EMA_9']
+        
+        # 1. Controllo INCROCIO INIZIALE
         if prev['EMA_9'] <= prev['EMA_21'] and last['EMA_9'] > last['EMA_21'] and rsi_val > 50:
             signal = "LONG"
             stop_loss = sl_long
@@ -155,13 +161,35 @@ def run_mib_check():
             stop_loss = sl_short
             take_profit = tp_short
             
+        else:
+            # 2. CONTINUAZIONE DI TREND (Trend Following Avanzato sui Pullback)
+            if last['EMA_9'] > last['EMA_21'] and ema9_slope > 0:
+                tocca_ema = (df_closed.iloc[-3]['Low'] <= df_closed.iloc[-3]['EMA_9']) or (df_closed.iloc[-2]['Low'] <= df_closed.iloc[-2]['EMA_9'])
+                rompe_massimo = last['Close'] > df_closed.iloc[-2]['High']
+                
+                if tocca_ema and rompe_massimo and rsi_val > 50:
+                    signal = "LONG"
+                    tipo_segnale = "CONTINUAZIONE (Pullback Pro)"
+                    stop_loss = current_price - (1.2 * atr_val)
+                    take_profit = min(current_price + (3.0 * atr_val), y_high)
+
+            elif last['EMA_9'] < last['EMA_21'] and ema9_slope < 0:
+                tocca_ema = (df_closed.iloc[-3]['High'] >= df_closed.iloc[-3]['EMA_9']) or (df_closed.iloc[-2]['High'] >= df_closed.iloc[-2]['EMA_9'])
+                rompe_minimo = last['Close'] < df_closed.iloc[-2]['Low']
+                
+                if tocca_ema and rompe_minimo and rsi_val < 50:
+                    signal = "SHORT"
+                    tipo_segnale = "CONTINUAZIONE (Pullback Pro)"
+                    stop_loss = current_price + (1.2 * atr_val)
+                    take_profit = max(current_price - (3.0 * atr_val), y_low)
+
         last_sent_signal = get_last_state()
         
         if signal:
-            if signal != last_sent_signal:
+            if signal != last_sent_signal or tipo_segnale == "CONTINUAZIONE (Pullback Pro)":
                 emoji = "🟢" if signal == "LONG" else "🔴"
                 
-                                # Applicazione dell'offset
+                # Applicazione dell'offset per Plus500
                 p_operativo = current_price + MIB_OFFSET
                 sl_operativo = stop_loss + MIB_OFFSET
                 tp_operativo = take_profit + MIB_OFFSET
@@ -175,7 +203,8 @@ def run_mib_check():
                     regola_tolleranza = f"• **Min Ingresso Consentito**: `{limite_ingresso:.2f}`"
                 
                 message = (
-                    f"🚨 *SEGNALE MINIFIB / MIB (15m)*\n\n"
+                    f"🚨 *SEGNALE MINIFIB / MIB (15m)*\n"
+                    f"• Tipo: *{tipo_segnale}*\n\n"
                     f"• Direzione: {emoji} *{signal}*\n"
                     f"• **Trigger (Ingresso)**: `{p_operativo:.2f}`\n"
                     f"{regola_tolleranza}\n"
@@ -187,15 +216,14 @@ def run_mib_check():
                     f"• Range Ieri (Daily): `{y_range:.1f} pt`\n"
                     f"• Orario candela: `{timestamp_candela}`"
                 )
-
                 
                 send_telegram(message)
                 save_state(signal)
-                print(f"✅ Segnale MIB {signal} elaborato con soglia matematica e inviato!")
+                print(f"✅ Segnale MIB {signal} ({tipo_segnale}) inviato correttamente!")
             else:
-                print(f"ℹ️ Segnale {signal} già registrato oggi. Nessun nuovo alert.")
+                print(f"ℹ️ Segnale {signal} già registrato oggi.")
         else:
-            print(f"MIB: Nessun nuovo segnale di cross (Ultimo stato registrato: {last_sent_signal})")
+            print(f"MIB: Nessun nuovo segnale o pullback Pro rilevato (Ultimo stato: {last_sent_signal})")
 
     except Exception as e:
         print(f"❌ Errore esecuzione mib_checker: {e}")
