@@ -22,11 +22,21 @@ def send_telegram(message):
     except Exception as e:
         print(f"Errore nell'invio Telegram: {e}")
 
+from datetime import datetime, date
+
 def get_last_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
                 data = json.load(f)
+                saved_date = data.get("date")
+                today_str = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
+                
+                # Se il segnale salvato è di un giorno precedente, azzeriamo lo stato (reset giornaliero!)
+                if saved_date != today_str:
+                    print("🔄 Nuovo giorno rilevato: reset dello stato precedente.")
+                    return None
+                    
                 return data.get("signal")
         except:
             pass
@@ -34,10 +44,16 @@ def get_last_state():
 
 def save_state(signal):
     try:
+        today_str = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
         with open(STATE_FILE, "w") as f:
-            json.dump({"signal": signal, "updated_at": datetime.now(TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}, f)
+            json.dump({
+                "signal": signal, 
+                "date": today_str,
+                "updated_at": datetime.now(TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')
+            }, f)
     except Exception as e:
         print(f"Errore salvataggio stato MIB: {e}")
+
 
 def run_mib_check():
     now = datetime.now(TIMEZONE)
