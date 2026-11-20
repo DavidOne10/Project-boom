@@ -12,6 +12,11 @@ TIMEZONE = pytz.timezone("Europe/Rome")
 STATE_FILE = "mib_state.json"
 MIB_OFFSET = -523  # Differenza fissa per Plus500
 
+SL_ATR_MULT = 1.2
+TP_ATR_MULT = 3.0
+TOLERANCE_ATR_MULT = 0.3
+
+
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         print("⚠️ Credenziali Telegram mancanti.")
@@ -23,12 +28,12 @@ def send_telegram(message):
         if response.status_code == 200:
             print("✅ Messaggio Telegram inviato con successo!")
             return True
-        else:
-            print(f"❌ Errore Telegram ({response.status_code}): {response.text}")
-            return False
+        print(f"❌ Errore Telegram ({response.status_code}): {response.text}")
+        return False
     except Exception as e:
         print(f"❌ Eccezione nell'invio Telegram: {e}")
         return False
+
 
 def get_last_state():
     if os.path.exists(STATE_FILE):
@@ -45,6 +50,7 @@ def get_last_state():
             pass
     return None
 
+
 def save_state(signal):
     try:
         today_str = datetime.now(TIMEZONE).strftime('%Y-%m-%d')
@@ -56,6 +62,19 @@ def save_state(signal):
             }, f)
     except Exception as e:
         print(f"Errore salvataggio stato MIB: {e}")
+
+
+def calc_levels(price, atr, y_high, y_low):
+    sl_long = price - (SL_ATR_MULT * atr)
+    tp_long_atr = price + (TP_ATR_MULT * atr)
+    tp_long = min(tp_long_atr, y_high) if (pd.notna(y_high) and y_high > price) else tp_long_atr
+
+    sl_short = price + (SL_ATR_MULT * atr)
+    tp_short_atr = price - (TP_ATR_MULT * atr)
+    tp_short = max(tp_short_atr, y_low) if (pd.notna(y_low) and y_low < price) else tp_short_atr
+
+    return sl_long, tp_long, sl_short, tp_short
+
 
 def run_mib_check():
     now = datetime.now(TIMEZONE)
@@ -107,8 +126,8 @@ def run_mib_check():
             df_daily.index = df_daily.index.tz_convert(TIMEZONE)
 
         yesterday = df_daily.iloc[-2]
-        y_high = yesterday['High']
-        y_low = yesterday['Low']
+        y_high = float(yesterday['High'])
+        y_low = float(yesterday['Low'])
         y_range = y_high - y_low
 
         df_closed = df_15m.iloc[:-1].copy()
@@ -131,16 +150,12 @@ def run_mib_check():
         last = df_closed.iloc[-1]
         prev = df_closed.iloc[-2]
 
-        current_price = last['Close']
+        current_price = float(last['Close'])
         timestamp_candela = df_closed.index[-1].strftime('%H:%M - %d/%m/%Y')
-        rsi_val = last['RSI']
-        atr_val = last['ATR']
+        rsi_val = float(last['RSI'])
+        atr_val = float(last['ATR'])
 
-        sl_long = current_price - (1.2 * atr_val)
-        tp_long = min(current_price + (3.0 * atr_val), y_high)
-
-        sl_short = current_price + (1.2 * atr_val)
-        tp_short = max(current_price - (3.0 * atr_val), y_low)
+        sl_long, tp_long, sl_short, tp_short = calc_levels(current_price, atr_val, y_high, y_low)
 
         print(f"📊 MIB Spot: {current_price:.2f} | EMA9: {last['EMA_9']:.2f} | EMA21: {last['EMA_21']:.2f} | RSI: {rsi_val:.1f}")
         print(f"🎯 Livelli in attesa -> LONG [SL: {sl_long:.2f} | TP: {tp_long:.2f}] | SHORT [SL: {sl_short:.2f} | TP: {tp_short:.2f}]")
@@ -148,8 +163,10 @@ def run_mib_check():
         # --- ANALISI SEGNALI (Incrocio + Trend Following Avanzato con Pullback e Slope) ---
         signal = None
         tipo_segnale = "INCROCIO"
+        stop_loss = None
+        take_profit = None
 
-        ema9_slope = last['EMA_9'] - df_closed.iloc[-2]['EMA_9']
+        ema9_slope = float(last['EMA_9'] - df_closed.iloc[-2]['EMA_9'])
 
         # 1. Controllo INCROCIO INIZIALE
         if prev['EMA_9'] <= prev['EMA_21'] and last['EMA_9'] > last['EMA_21'] and rsi_val > 50:
@@ -171,8 +188,8 @@ def run_mib_check():
                 if tocca_ema and rompe_massimo and rsi_val > 50:
                     signal = "LONG"
                     tipo_segnale = "CONTINUAZIONE (Pullback Pro)"
-                    stop_loss = current_price - (1.2 * atr_val)
-                    take_profit = min(current_price + (3.0 * atr_val), y_high)
+                    stop_loss = sl_long
+                    take_profit = tp_long
 
             elif last['EMA_9'] < last['EMA_21'] and ema9_slope < 0:
                 tocca_ema = (df_closed.iloc[-3]['High'] >= df_closed.iloc[-3]['EMA_9']) or (df_closed.iloc[-2]['High'] >= df_closed.iloc[-2]['EMA_9'])
@@ -181,8 +198,8 @@ def run_mib_check():
                 if tocca_ema and rompe_minimo and rsi_val < 50:
                     signal = "SHORT"
                     tipo_segnale = "CONTINUAZIONE (Pullback Pro)"
-                    stop_loss = current_price + (1.2 * atr_val)
-                    take_profit = max(current_price - (3.0 * atr_val), y_low)
+                    stop_loss = sl_short
+                    take_profit = tp_short
 
         last_sent_signal = get_last_state()
 
@@ -194,7 +211,7 @@ def run_mib_check():
                 sl_operativo = stop_loss + MIB_OFFSET
                 tp_operativo = take_profit + MIB_OFFSET
 
-                tolleranza = 0.3 * atr_val
+                tolleranza = TOLERANCE_ATR_MULT * atr_val
                 if signal == "LONG":
                     limite_ingresso = (current_price + tolleranza) + MIB_OFFSET
                     regola_tolleranza = f"• **Max Ingresso Consentito**: `{limite_ingresso:.2f}`"
@@ -229,6 +246,7 @@ def run_mib_check():
 
     except Exception as e:
         print(f"❌ Errore esecuzione mib_checker: {e}")
+
 
 if __name__ == "__main__":
     run_mib_check()
