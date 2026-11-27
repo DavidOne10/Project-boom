@@ -10,7 +10,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("TELEGRAM_BO
 CHAT_ID = os.environ.get("CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID")
 TIMEZONE = pytz.timezone("Europe/Rome")
 STATE_FILE = "mib_state.json"
-MIB_OFFSET = +78  # Differenza fissa per Plus500
+MIB_OFFSET = +75  # Differenza fissa per Plus500
 
 SL_ATR_MULT = 1.2
 TP_ATR_MULT = 3.0
